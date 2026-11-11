@@ -238,6 +238,19 @@ pub enum Placer {
     Hidden,
     /// Search hypothesis (later branches may undo it).
     Guess,
+    /// Dancing-links row selection.
+    Dlx,
+    /// A dancing-links row was deselected (backtracked); the cell is empty.
+    Undo,
+}
+
+/// Which solving engine to use.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Algorithm {
+    /// Constraint propagation (naked + hidden singles) + MRV backtracking.
+    Propagation,
+    /// Knuth's Algorithm X with dancing links (`dlx`).
+    DancingLinks,
 }
 
 /// Knobs the caller can turn.
@@ -246,20 +259,32 @@ pub struct SolveConfig {
     /// Stop once this many solutions are found (>= 1). 2 proves uniqueness.
     pub max_solutions: usize,
     /// If false, the solver stops as soon as pure singles logic stalls
-    /// (no hypothesis search / backtracking).
+    /// (no hypothesis search / backtracking). Ignored by the DLX engine.
     pub allow_search: bool,
+    /// Which solving engine to run.
+    pub algorithm: Algorithm,
 }
 
 impl Default for SolveConfig {
     fn default() -> Self {
-        SolveConfig { max_solutions: 2, allow_search: true }
+        SolveConfig {
+            max_solutions: 2,
+            allow_search: true,
+            algorithm: Algorithm::Propagation,
+        }
     }
 }
 
 impl SolveConfig {
     /// Legacy behaviour: search enabled, stop after `max` solutions.
     pub fn with_max(max_solutions: usize) -> SolveConfig {
-        SolveConfig { max_solutions, allow_search: true }
+        SolveConfig { max_solutions, ..SolveConfig::default() }
+    }
+
+    /// Builder-style: pick the engine.
+    pub fn with_algorithm(mut self, algorithm: Algorithm) -> SolveConfig {
+        self.algorithm = algorithm;
+        self
     }
 }
 
@@ -279,7 +304,7 @@ pub trait StepLogger {
 }
 
 /// Discards step events (used when nobody is watching).
-struct NopLogger;
+pub(crate) struct NopLogger;
 
 impl StepLogger for NopLogger {
     fn step(&mut self, _cells: &[u8; 81], _info: Option<StepInfo>) {}
@@ -289,6 +314,18 @@ impl StepLogger for NopLogger {
 /// If `logger` is given, it is called for every placement as it happens,
 /// including placements that are later undone by backtracking.
 pub fn solve_with(
+    grid: &Grid,
+    cfg: SolveConfig,
+    logger: Option<&mut dyn StepLogger>,
+) -> SolveOutcome {
+    match cfg.algorithm {
+        Algorithm::Propagation => solve_propagation(grid, cfg, logger),
+        Algorithm::DancingLinks => crate::dlx::solve_dlx(grid, cfg, logger),
+    }
+}
+
+/// The propagation + MRV engine (formerly the whole solver).
+fn solve_propagation(
     grid: &Grid,
     cfg: SolveConfig,
     logger: Option<&mut dyn StepLogger>,
@@ -341,6 +378,8 @@ impl fmt::Debug for SolveOutcome {
 
 /// Solve `grid`, stopping once `max_solutions` solutions are found.
 /// `max_solutions` of 2 is enough to detect non-unique puzzles.
+/// (Convenience wrapper; the CLIs build a `SolveConfig` directly.)
+#[allow(dead_code)]
 pub fn solve(grid: &Grid, max_solutions: usize) -> SolveOutcome {
     solve_with(grid, SolveConfig::with_max(max_solutions), None)
 }
@@ -483,7 +522,7 @@ mod tests {
     fn config_can_forbid_search() {
         // Singles-only mode: Inkala stalls, so no solution is reached.
         let g = Grid::parse(INKALA).unwrap();
-        let cfg = SolveConfig { max_solutions: 2, allow_search: false };
+        let cfg = SolveConfig { max_solutions: 2, allow_search: false, ..SolveConfig::default() };
         assert!(matches!(
             solve_with(&g, cfg, None),
             SolveOutcome::NoSolution { .. }
@@ -500,7 +539,7 @@ mod tests {
     #[test]
     fn config_max_one_stops_at_first_solution() {
         let g = Grid::parse(WIKIPEDIA).unwrap();
-        let cfg = SolveConfig { max_solutions: 1, allow_search: true };
+        let cfg = SolveConfig { max_solutions: 1, allow_search: true, ..SolveConfig::default() };
         match solve_with(&g, cfg, None) {
             SolveOutcome::Unique { solution, .. } => {
                 assert_eq!(solution.get(0, 0), 5);

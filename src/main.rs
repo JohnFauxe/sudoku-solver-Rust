@@ -5,13 +5,14 @@ use std::fs;
 use std::io::{self, Write};
 use std::process::ExitCode;
 
+mod dlx;
 mod grid;
 mod solver;
 mod tui;
 mod ui;
 
 use grid::Grid;
-use solver::{SolveOutcome, SolveStats};
+use solver::{Algorithm, SolveConfig, SolveOutcome, SolveStats};
 
 const USAGE: &str = "\
  sudoku — a Sudoku solver (constraint propagation + MRV backtracking)
@@ -21,17 +22,26 @@ USAGE:
                             0 or . for empty cells, e.g.
                             530070000600195000098000060800060003400803001700020006060000280000419005000080079
                             Drawn grids (spaces and | - + separators) are accepted too.
+  sudoku --dlx <PUZZLE>     Solve with Knuth's dancing links (Algorithm X)
+  sudoku -a --algorithm=mrv|dlx   Pick the engine (default mrv).
   sudoku -w --watch <PUZZLE>  Live view: shows the imported puzzle, then
                               animates the grid as the solver fills it in.
   sudoku --fps=<N> <PUZZLE>   Animation speed for --watch, frames per
                               second (default 30).
   sudoku --ui [--port=<N>]    Browser window: import puzzles, configure the
-                              solver and watch it solve. Opens your default
-                              browser at http://127.0.0.1:8173 (--no-open
-                              to skip auto-open). Ctrl-C stops the server.
+                              solver (algorithm included) and watch it solve.
+                              Opens your default browser at
+                              http://127.0.0.1:8173 (--no-open to skip
+                              auto-open). Ctrl-C stops the server.
   sudoku -f <PATH>          Solve every puzzle in a file, one per line.
   sudoku --file=<PATH>      Blank lines and lines starting with '#' are skipped.
   sudoku -h | --help        Show this help.
+
+ALGORITHMS:
+  mrv  constraint propagation (naked + hidden singles)
+       then backtracking on the most-constrained cell (default)
+  dlx  Knuth's Algorithm X via dancing links, Sudoku modeled as
+       exact cover (324 constraints); also selectable in the UI
 
 DIFFICULTY (rough):
   Easy    - solved with naked singles only
@@ -81,6 +91,7 @@ fn run(args: &[String]) -> Exit {
     let mut ui = false;
     let mut port: u16 = 8173;
     let mut open_browser = true;
+    let mut algorithm = Algorithm::Propagation;
 
     let mut i = 0;
     while i < args.len() {
@@ -93,6 +104,31 @@ fn run(args: &[String]) -> Exit {
             "-w" | "--watch" => watch = true,
             "--ui" | "--serve" => ui = true,
             "--no-open" => open_browser = false,
+            "--dlx" => algorithm = Algorithm::DancingLinks,
+            "-a" | "--algorithm" => match args.get(i + 1).map(|s| s.as_str()) {
+                Some("mrv") => {
+                    algorithm = Algorithm::Propagation;
+                    i += 1;
+                }
+                Some("dlx") | Some("dancing") | Some("dancing-links") => {
+                    algorithm = Algorithm::DancingLinks;
+                    i += 1;
+                }
+                other => {
+                    eprintln!("error: unknown algorithm {other:?} (use mrv or dlx)");
+                    eprint!("{USAGE}");
+                    return USAGE_ERROR;
+                }
+            },
+            v if v.starts_with("--algorithm=") => match v.trim_start_matches("--algorithm=") {
+                "mrv" => algorithm = Algorithm::Propagation,
+                "dlx" | "dancing" | "dancing-links" => algorithm = Algorithm::DancingLinks,
+                other => {
+                    eprintln!("error: unknown algorithm {other:?} (use mrv or dlx)");
+                    eprint!("{USAGE}");
+                    return USAGE_ERROR;
+                }
+            },
             "--port" => match args.get(i + 1).and_then(|v| v.parse::<u16>().ok()) {
                 Some(v) => {
                     port = v;
@@ -172,14 +208,14 @@ fn run(args: &[String]) -> Exit {
     }
 
     match (puzzle, file) {
-        (Some(p), None) if watch => tui::watch(&p, fps),
-        (Some(p), None) => solve_one(&p),
+        (Some(p), None) if watch => tui::watch(&p, fps, algorithm),
+        (Some(p), None) => solve_one(&p, algorithm),
         (None, Some(f)) => {
             if watch {
                 eprintln!("error: --watch animates a single puzzle argument, not a file");
                 return USAGE_ERROR;
             }
-            solve_file(&f)
+            solve_file(&f, algorithm)
         }
         (None, None) => {
             eprintln!("error: expected a puzzle or -f <PATH>");
@@ -194,7 +230,7 @@ fn run(args: &[String]) -> Exit {
     }
 }
 
-fn solve_one(puzzle: &str) -> Exit {
+fn solve_one(puzzle: &str, algorithm: Algorithm) -> Exit {
     let grid = match Grid::parse(puzzle) {
         Ok(g) => g,
         Err(e) => {
@@ -204,10 +240,10 @@ fn solve_one(puzzle: &str) -> Exit {
     };
 
     out(format_args!("Puzzle:\n{grid}"));
-    report_solve(&grid)
+    report_solve(&grid, algorithm)
 }
 
-fn solve_file(path: &str) -> Exit {
+fn solve_file(path: &str, algorithm: Algorithm) -> Exit {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
@@ -225,7 +261,7 @@ fn solve_file(path: &str) -> Exit {
         match Grid::parse(line) {
             Ok(grid) => {
                 out(format_args!("\nline {}: {line}\n{grid}", n + 1));
-                worst = worst.max(report_solve(&grid));
+                worst = worst.max(report_solve(&grid, algorithm));
             }
             Err(e) => {
                 out(format_args!("\nline {}: {line}\n  ERROR: {e}", n + 1));
@@ -237,15 +273,20 @@ fn solve_file(path: &str) -> Exit {
 }
 
 /// Solve and print the result; returns the matching exit code.
-fn report_solve(grid: &Grid) -> Exit {
-    match solver::solve(grid, 2) {
+fn report_solve(grid: &Grid, algorithm: Algorithm) -> Exit {
+    let cfg = SolveConfig::with_max(2).with_algorithm(algorithm);
+    match solver::solve_with(grid, cfg, None) {
         SolveOutcome::Unique { solution, stats } => {
             let SolveStats { naked_singles, hidden_singles, guesses, backtracks } = stats;
+            let tier = match algorithm {
+                Algorithm::Propagation => stats.difficulty().to_string(),
+                Algorithm::DancingLinks => "dancing links".to_string(),
+            };
             out(format_args!(
                 "Solution ({}):\n{solution}\n\
                  solver: {naked_singles} naked + {hidden_singles} hidden singles, \
-                 {guesses} search nodes, {backtracks} dead ends",
-                stats.difficulty(),
+                 {guesses} placements, {backtracks} dead ends",
+                tier,
             ));
             OK
         }

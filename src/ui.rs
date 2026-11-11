@@ -13,7 +13,7 @@ use std::time::Instant;
 
 use crate::grid::Grid;
 use crate::solver::{
-    solve_with, Placer, SolveConfig, SolveOutcome, StepInfo, StepLogger,
+    solve_with, Algorithm, Placer, SolveConfig, SolveOutcome, StepInfo, StepLogger,
 };
 
 const PAGE: &str = include_str!("ui_page.html");
@@ -43,6 +43,8 @@ impl StepLogger for EventCollector {
                     Placer::Naked => "n",
                     Placer::Hidden => "h",
                     Placer::Guess => "g",
+                    Placer::Dlx => "d",
+                    Placer::Undo => "u",
                 },
             ),
             None => ("null".into(), "null".into(), "null"),
@@ -118,9 +120,15 @@ fn solve_api(body: &str) -> (&'static str, &'static str, String) {
     };
     let max_solutions = json_num_field(body, "maxSolutions").unwrap_or(2);
     let allow_search = json_bool_field(body, "allowSearch", true);
+    let alg_name = json_str_field(body, "algorithm").unwrap_or_default();
+    let algorithm = match alg_name.as_str() {
+        "dlx" => Algorithm::DancingLinks,
+        _ => Algorithm::Propagation,
+    };
     let cfg = SolveConfig {
         max_solutions: max_solutions.clamp(1, 256) as usize,
         allow_search,
+        algorithm,
     };
 
     let Ok(grid) = Grid::parse(&puzzle) else {

@@ -31,6 +31,10 @@ cargo build --release
 . . . | 4 1 9 | . . 5
 . . . | . 8 . | . 7 9"
 
+# Choose the solving engine
+./target/release/sudoku --dlx <PUZZLE>       # Knuth's dancing links (Algorithm X)
+./target/release/sudoku --algorithm=mrv <PUZZLE>   # default: propagation + MRV
+
 # Watch mode: live view of the solver populating the grid
 # (clues stay bold white; fresh moves in green, latest in cyan,
 #  backtracked cells flash gray; animation stays within ~1-10 s)
@@ -51,16 +55,24 @@ cargo build --release
 
 - **Import**: paste a puzzle (compact or drawn grid), "open file…",
   or click an example. `/​?puzzle=<81 chars>` deep-links too.
-- **Configure**: stop after N solutions (1 = first found, 2 = prove
-  uniqueness), and search on/off — "singles only" runs stall on hard
-  puzzles by design.
-- **Watch**: the Rust engine streams every placement (including search
-  guesses that are later undone); the page replays it on a colored
-  9x9 grid with play / pause / step / restart, a speed slider
-  (1–500 events/s), a scrubber, a progress bar, and the solver's
-  stats and verdict (unique / no solution / multiple / stuck).
+- **Configure**: engine (propagation + MRV or dancing links), stop
+  after N solutions (1 = first found, 2 = prove uniqueness), and
+  search on/off — "singles only" runs stall on hard puzzles by design.
+- **Watch**: the engine streams every placement (including search
+  guesses and DLX selections that are later undone); the page replays
+  it on a colored 9x9 grid with play / pause / step / restart, a speed
+  slider (1–500 events/s), a scrubber, a progress bar, and the
+  solver's stats and verdict (unique / no solution / multiple / stuck).
 
-Output includes a rough difficulty tier and solver statistics.
+### Solving algorithms
+
+| engine | model | notes |
+|--------|-------|-------|
+| `mrv`  | bitmask candidates: naked + hidden singles, then MRV backtracking | reports which technique placed each cell; "singles only" mode available |
+| `dlx`  | exact cover: 324 constraints (cell/row/col/box x digit), 729 placement rows, dancing links with Knuth's S heuristic | every row selection/deselection is a step; typically ~2x faster end-to-end |
+
+Both engines emit the same step-event stream, so the terminal `--watch`
+mode and the browser window animate either engine identically.
 
 ## Exit codes
 
@@ -75,8 +87,10 @@ Output includes a rough difficulty tier and solver statistics.
 
 - `src/grid.rs` — grid type, parsing, clue validation (duplicates in
   rows, columns and boxes), pretty printing
-- `src/solver.rs` — bitmask solver engine, propagation, MRV search,
-  difficulty tiers, step-event logging, unit tests
+- `src/solver.rs` — propagation + MRV engine, `SolveConfig`/`Algorithm`,
+  step-event logging, unit tests
+- `src/dlx.rs` — dancing links engine: exact-cover model, cover/uncover,
+  S heuristic, clue pre-coverage, unit tests
 - `src/tui.rs` — `--watch` live view: ANSI screen, step throttling,
   outcome footers
 - `src/ui.rs` + `src/ui_page.html` — `--ui` browser window: std-only
