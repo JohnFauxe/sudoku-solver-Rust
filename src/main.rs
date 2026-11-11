@@ -8,6 +8,7 @@ use std::process::ExitCode;
 mod grid;
 mod solver;
 mod tui;
+mod ui;
 
 use grid::Grid;
 use solver::{SolveOutcome, SolveStats};
@@ -24,6 +25,10 @@ USAGE:
                               animates the grid as the solver fills it in.
   sudoku --fps=<N> <PUZZLE>   Animation speed for --watch, frames per
                               second (default 30).
+  sudoku --ui [--port=<N>]    Browser window: import puzzles, configure the
+                              solver and watch it solve. Opens your default
+                              browser at http://127.0.0.1:8173 (--no-open
+                              to skip auto-open). Ctrl-C stops the server.
   sudoku -f <PATH>          Solve every puzzle in a file, one per line.
   sudoku --file=<PATH>      Blank lines and lines starting with '#' are skipped.
   sudoku -h | --help        Show this help.
@@ -73,6 +78,9 @@ fn run(args: &[String]) -> Exit {
     let mut fps: u32 = 30;
     let mut puzzle: Option<String> = None;
     let mut file: Option<String> = None;
+    let mut ui = false;
+    let mut port: u16 = 8173;
+    let mut open_browser = true;
 
     let mut i = 0;
     while i < args.len() {
@@ -83,6 +91,28 @@ fn run(args: &[String]) -> Exit {
                 return OK;
             }
             "-w" | "--watch" => watch = true,
+            "--ui" | "--serve" => ui = true,
+            "--no-open" => open_browser = false,
+            "--port" => match args.get(i + 1).and_then(|v| v.parse::<u16>().ok()) {
+                Some(v) => {
+                    port = v;
+                    i += 1;
+                }
+                None => {
+                    eprintln!("error: --port needs a number");
+                    eprint!("{USAGE}");
+                    return USAGE_ERROR;
+                }
+            },
+            "--port=N" => (),
+            v if v.starts_with("--port=") => match v.trim_start_matches("--port=").parse::<u16>() {
+                Ok(v) => port = v,
+                Err(_) => {
+                    eprintln!("error: bad value for --port: {v}");
+                    eprint!("{USAGE}");
+                    return USAGE_ERROR;
+                }
+            },
             "--fps" => match args.get(i + 1).and_then(|v| v.parse::<u32>().ok()) {
                 Some(v) => {
                     fps = v;
@@ -131,6 +161,14 @@ fn run(args: &[String]) -> Exit {
             }
         }
         i += 1;
+    }
+
+    if ui {
+        if watch || file.is_some() || puzzle.is_some() {
+            eprintln!("error: --ui is standalone; it takes no puzzle, --watch or -f");
+            return USAGE_ERROR;
+        }
+        ui::serve(port, open_browser)
     }
 
     match (puzzle, file) {
@@ -211,11 +249,11 @@ fn report_solve(grid: &Grid) -> Exit {
             ));
             OK
         }
-        SolveOutcome::NoSolution => {
+        SolveOutcome::NoSolution { .. } => {
             out(format_args!("Result: NO SOLUTION — no valid grid satisfies these clues."));
             FAIL
         }
-        SolveOutcome::Multiple { solutions } => {
+        SolveOutcome::Multiple { solutions, .. } => {
             out(format_args!(
                 "Result: MULTIPLE SOLUTIONS ({} found, capped) — \
                  this is not a proper sudoku.",

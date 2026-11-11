@@ -36,11 +36,29 @@ cargo build --release
 #  backtracked cells flash gray; animation stays within ~1-10 s)
 ./target/release/sudoku -w --fps=30 <PUZZLE>
 
+# Browser UI: import puzzles, configure the solver, watch it solve.
+# Opens your default browser at http://127.0.0.1:8173 (Ctrl-C stops it).
+./target/release/sudoku --ui
+./target/release/sudoku --ui --port=9000 --no-open
+
 # Solve every puzzle in a file, one per line (# comments allowed)
 ./target/release/sudoku -f puzzles.txt
 
 ./target/release/sudoku --help
 ```
+
+### The browser window (`--ui`)
+
+- **Import**: paste a puzzle (compact or drawn grid), "open file…",
+  or click an example. `/​?puzzle=<81 chars>` deep-links too.
+- **Configure**: stop after N solutions (1 = first found, 2 = prove
+  uniqueness), and search on/off — "singles only" runs stall on hard
+  puzzles by design.
+- **Watch**: the Rust engine streams every placement (including search
+  guesses that are later undone); the page replays it on a colored
+  9x9 grid with play / pause / step / restart, a speed slider
+  (1–500 events/s), a scrubber, a progress bar, and the solver's
+  stats and verdict (unique / no solution / multiple / stuck).
 
 Output includes a rough difficulty tier and solver statistics.
 
@@ -61,6 +79,8 @@ Output includes a rough difficulty tier and solver statistics.
   difficulty tiers, step-event logging, unit tests
 - `src/tui.rs` — `--watch` live view: ANSI screen, step throttling,
   outcome footers
+- `src/ui.rs` + `src/ui_page.html` — `--ui` browser window: std-only
+  local web server, embedded page, JSON step-event API
 - `src/main.rs` — CLI
 
 ## Tests

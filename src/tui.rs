@@ -11,7 +11,7 @@ use std::io::{self, Write as IoWrite};
 use std::time::{Duration, Instant};
 
 use crate::grid::Grid;
-use crate::solver::{SolveOutcome, SolveStats, StepInfo, StepLogger};
+use crate::solver::{SolveConfig, SolveOutcome, SolveStats, StepInfo, StepLogger};
 use crate::{Exit, FAIL, MULTI, OK};
 
 /// Counts solver steps without touching the screen; used to size the
@@ -139,7 +139,7 @@ pub fn watch(puzzle: &str, fps: u32) -> Exit {
     // Dry run to count solver events, so we can pick a frame stride that
     // keeps the whole animation in a watchable window (1–10 s).
     let mut count = CountLogger(0);
-    let _ = crate::solver::solve_with(&grid, 2, Some(&mut count));
+    let _ = crate::solver::solve_with(&grid, SolveConfig::with_max(2), Some(&mut count));
     let n = count.0 as f64;
     let target = (n / fps).clamp(1.0, 10.0);
     let step_every = ((n / (target * fps)).ceil() as u64).max(1);
@@ -166,7 +166,7 @@ pub fn watch(puzzle: &str, fps: u32) -> Exit {
     w.render(grid.cells(), &start_footer);
     std::thread::sleep(Duration::from_millis(700));
 
-    let outcome = crate::solver::solve_with(&grid, 2, Some(&mut w));
+    let outcome = crate::solver::solve_with(&grid, SolveConfig::with_max(2), Some(&mut w));
 
     match outcome {
         SolveOutcome::Unique { solution, stats } => {
@@ -181,16 +181,17 @@ pub fn watch(puzzle: &str, fps: u32) -> Exit {
             );
             OK
         }
-        SolveOutcome::NoSolution => {
+        SolveOutcome::NoSolution { .. } => {
             w.render_final(grid.cells(), "NO SOLUTION — no valid grid satisfies these clues");
             FAIL
         }
-        SolveOutcome::Multiple { solutions } => {
+        SolveOutcome::Multiple { solutions, stats } => {
             w.render_final(
                 grid.cells(),
                 &format!(
-                    "MULTIPLE SOLUTIONS ({} found, capped) — this is not a proper sudoku",
-                    solutions.len()
+                    "MULTIPLE SOLUTIONS ({} found, capped) — this is not a proper sudoku \
+                     ({} naked + {} hidden singles, {} search nodes)",
+                    solutions.len(), stats.naked_singles, stats.hidden_singles, stats.guesses
                 ),
             );
             MULTI

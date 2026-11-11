@@ -1,0 +1,281 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sudoku — solver UI</title>
+<style>
+:root { --cell: 44px; --grid-line: #2a3140; --grid-strong: #4a5468; }
+* { box-sizing: border-box; }
+body { margin: 0; font-family: system-ui, "Segoe UI", monospace; background: #10141c; color: #ddd; }
+header { display: flex; gap: 14px; align-items: baseline; padding: 12px 20px; background: #161b26; border-bottom: 1px solid #2a3040; }
+h1 { font-size: 16px; margin: 0; color: #c586ff; font-weight: 600; }
+header .url { font-size: 12px; color: #8a93a6; }
+main { display: flex; gap: 22px; padding: 20px; align-items: flex-start; flex-wrap: wrap; }
+.panel { width: 330px; display: flex; flex-direction: column; gap: 12px; }
+.card { background: #161b26; border: 1px solid #2a3040; border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.card label { font-size: 11px; color: #8a93a6; display: block; }
+textarea { width: 100%; height: 84px; background: #0d1017; color: #9fe6a0; border: 1px solid #2a3040; border-radius: 6px; font-family: monospace; font-size: 12px; padding: 6px; resize: vertical; }
+button { background: #253047; color: #dbe2ff; border: 1px solid #33405e; border-radius: 6px; padding: 7px 12px; cursor: pointer; font-size: 13px; }
+button:hover { background: #2e3d5c; }
+button.primary { background: #4a3f8f; border-color: #6a5dcf; }
+button.primary:hover { background: #574aa4; }
+button:disabled { opacity: .35; cursor: default; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.row label { display: inline; margin: 0; }
+select, input[type=number] { background: #0d1017; color: #dbe2ff; border: 1px solid #2a3040; border-radius: 6px; padding: 5px; }
+input[type=range] { width: 100%; accent-color: #7d6bff; }
+input[type=checkbox] { accent-color: #7d6bff; }
+#grid { display: grid; grid-template-columns: repeat(9, var(--cell)); grid-template-rows: repeat(9, var(--cell)); border: 3px solid var(--grid-strong); border-radius: 4px; background: #0d1017; }
+#grid div { border: 1px solid var(--grid-line); display: flex; align-items: center; justify-content: center; font-size: 21px; font-family: monospace; }
+#grid .bl { border-left: 2.5px solid var(--grid-strong); }
+#grid .bt { border-top: 2.5px solid var(--grid-strong); }
+#grid .clue { color: #fff; font-weight: 700; }
+#grid .fresh { color: #7dff8a; font-weight: 600; }
+#grid .latest { background: #0e5e66; color: #8ce8ff; font-weight: 700; }
+#grid .undone { color: #525c68; }
+#grid .settled { color: #e2e2e2; }
+#progress { height: 6px; background: #232a38; border-radius: 3px; overflow: hidden; }
+#progressBar { height: 100%; width: 0; background: #7dff8a; }
+#status { margin-top: 14px; min-height: 3em; font-size: 14px; line-height: 1.5; }
+.ok { color: #7dff8a; } .err { color: #ff7d7d; } .warn { color: #ffd27d; }
+.stats { font-size: 12px; color: #8a93a6; margin-top: 6px; min-height: 1em; }
+.eventline { font-size: 11px; color: #6b7488; margin-top: 4px; }
+.examples button { font-size: 12px; padding: 5px 9px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>sudoku — solver UI</h1>
+  <span class="url"></span>
+</header>
+<main>
+  <div class="panel">
+    <div class="card">
+      <label>import puzzle — 81 characters (1-9 = clues, 0 or . = empty), or a drawn grid</label>
+      <textarea id="puzzle" spellcheck="false" placeholder="530070000600195000098000060800060003400803001700020006060000280000419005000080079"></textarea>
+      <div class="row">
+        <button id="importBtn" class="primary">import &amp; watch</button>
+        <button id="fileBtn">open file…</button>
+        <input type="file" id="fileInput" accept=".txt,.text,.sudoku,text/plain" style="display:none">
+      </div>
+      <label>or try an example</label>
+      <div class="row examples" id="examples"></div>
+    </div>
+    <div class="card">
+      <label>solver configuration</label>
+      <div class="row">
+        <label for="maxSolutions">stop after</label>
+        <select id="maxSolutions">
+          <option value="1">first solution</option>
+          <option value="2" selected>2 (prove uniqueness)</option>
+          <option value="4">4</option>
+          <option value="16">16</option>
+        </select>
+      </div>
+      <div class="row">
+        <label><input type="checkbox" id="allowSearch" checked> allow search / backtracking</label>
+      </div>
+      <div style="font-size:11px;color:#6b7488">uncheck search for a "singles only" run — it stalls on hard puzzles</div>
+    </div>
+    <div class="card">
+      <label>playback</label>
+      <div class="row">
+        <button id="playBtn">&#9654; play</button>
+        <button id="pauseBtn">&#10073;&#10073; pause</button>
+        <button id="stepBtn">step &#9654;</button>
+        <button id="restartBtn">&#8634; restart</button>
+      </div>
+      <label id="speedLabel" style="margin-top:4px">speed: 60 events/s</label>
+      <input type="range" id="speed" min="1" max="500" value="60">
+      <label style="margin-top:6px">position</label>
+      <input type="range" id="scrub" min="0" max="0" value="0">
+      <div id="progress" style="margin-top:8px"><div id="progressBar"></div></div>
+      <div class="eventline" id="eventline">import a puzzle to begin</div>
+    </div>
+  </div>
+  <div>
+    <div id="grid"></div>
+    <div id="status"></div>
+  </div>
+</main>
+<script>
+"use strict";
+const grid = document.getElementById("grid");
+for (let i = 0; i < 81; i++) {
+  const d = document.createElement("div");
+  d.appendChild(document.createTextNode(""));
+  grid.appendChild(d);
+}
+const cells = [...grid.children];
+const $ = (id) => document.getElementById(id);
+
+const EXAMPLES = [
+  ["classic easy", "530070000600195000098000060800060003400803001700020006060000280000419005000080079"],
+  ["2019 hardest", ["8........", "..36.....", ".7..9.2..", ".5...7...", "....457..", "...1...3.", "..1....68", "..85...1.", ".9....4.."].join("")],
+  ["unsolvable",   ["1........", "2........", "3........", "4........", "5........", "6........", "7........", "8........", ".9......."].join("")],
+];
+for (const [name, puzzle] of EXAMPLES) {
+  const b = document.createElement("button");
+  b.textContent = name;
+  b.onclick = () => { $("puzzle").value = puzzle; importSolve(); };
+  $("examples").appendChild(b);
+}
+
+let S = { events: [], clue: "", cursor: 0, playing: false, speed: 60, lastT: null, acc: 0, outcome: null };
+
+function borderCls(i) {
+  const c = i % 9, r = (i / 9) | 0;
+  return (c === 3 || c === 6 ? " bl" : "") + (r === 3 || r === 6 ? " bt" : "");
+}
+
+function renderFrame(idx) {
+  const ev = S.events[idx];
+  if (!ev) return;
+  const prev = idx > 0 ? S.events[idx - 1].s : ev.s;
+  let filled = 0;
+  for (let i = 0; i < 81; i++) {
+    const el = cells[i], c = ev.s[i], p = prev[i];
+    el.textContent = c === "." ? "" : c;
+    const b = borderCls(i);
+    if (S.clue[i] !== ".") { el.className = "clue" + b; }
+    else if (c !== p && c !== ".") { el.className = "fresh" + b; }
+    else if (c !== p) { el.className = "undone" + b; }
+    else if (c !== ".") { el.className = "settled" + b; }
+    else { el.className = "" + b; }
+    if (c !== ".") filled++;
+  }
+  if (ev.i != null) cells[ev.i].classList.add("latest");
+  $("progressBar").style.width = (filled / 81 * 100).toFixed(1) + "%";
+  $("scrub").max = S.events.length - 1;
+  $("scrub").value = idx;
+  const who = ev.p === null ? "start" : (ev.p === "n" ? "naked single" : ev.p === "h" ? "hidden single" : "search guess");
+  $("eventline").textContent = "event " + idx + " / " + (S.events.length - 1) + " \u2014 " + who +
+     " (" + filled + "/81 cells)";
+}
+
+function loop(ts) {
+  if (!S.playing) return;
+  if (S.lastT === null) S.lastT = ts;
+  const dt = ts - S.lastT;
+  S.lastT = ts;
+  S.acc += (dt * S.speed) / 1000;
+  while (S.acc >= 1 && S.cursor < S.events.length - 1) { S.acc--; S.cursor++; }
+  renderFrame(S.cursor);
+  if (S.cursor >= S.events.length - 1) { setPlaying(false); }
+  else { requestAnimationFrame(loop); }
+}
+function setPlaying(p) {
+  S.playing = p;
+  if (p) { S.lastT = null; requestAnimationFrame(loop); }
+  $("playBtn").disabled = p;
+  $("pauseBtn").disabled = !p;
+}
+function play() {
+  if (S.events.length === 0) return;
+  if (S.cursor >= S.events.length - 1) { S.cursor = 0; renderFrame(0); }
+  setPlaying(true);
+}
+function pause() { setPlaying(false); }
+function step() { if (S.cursor < S.events.length - 1) { S.cursor++; renderFrame(S.cursor); } }
+function restart() { S.cursor = 0; renderFrame(0); }
+
+$("playBtn").onclick = play;
+$("pauseBtn").onclick = () => setPlaying(false);
+$("stepBtn").onclick = () => { setPlaying(false); step(); };
+$("restartBtn").onclick = () => { restart(); };
+$("speed").oninput = () => { S.speed = +$("speed").value; $("speedLabel").textContent = "speed: " + S.speed + " events/s"; };
+$("scrub").oninput = () => { setPlaying(false); S.cursor = +$("scrub").value; renderFrame(S.cursor); };
+
+function status(html, cls) {
+  $("status").innerHTML = '<span class="' + cls + '">' + html + "</span>";
+  const st = $("stats");
+  if (st) $("stats").textContent = "";
+}
+
+function outcomeHtml(j) {
+  const s = j.stats;
+  const statsText = s ? (" " + s.naked + " naked + " + s.hidden + " hidden singles, " +
+    s.guesses + " search nodes, " + s.dead + " dead ends, " + j.elapsedMs + " ms") : "";
+  let out = document.createElement("div");
+  if (j.outcome === "unique") {
+    out.innerHTML = '<span class="ok">SOLVED \u2014 unique solution.</span>';
+  } else if (j.outcome === "multiple") {
+    out.innerHTML = '<span class="warn">MULTIPLE SOLUTIONS (' + j.solutions.length +
+      " found, capped) \u2014 not a proper sudoku. Watch keeps replaying; final boards differ.</span>";
+  } else if (j.incomplete) {
+    out.innerHTML = '<span class="warn">STUCK \u2014 singles only could not finish this puzzle; enable search.</span>';
+  } else {
+    out.innerHTML = '<span class="err">NO SOLUTION \u2014 no valid grid satisfies these clues.</span>';
+  }
+  const st = document.createElement("div");
+  st.className = "stats";
+  st.textContent = statsText.trim();
+  const wrap = document.createElement("div");
+  wrap.appendChild(out); wrap.appendChild(st);
+  $("status").replaceChildren(wrap);
+}
+
+// With uniqueness proof the search keeps branching after the first complete
+// board; for display we stop the replay right at the solved moment.
+function trimEventsAtFirstSolution(events) {
+  for (let i = 0; i < events.length; i++) {
+    if (events[i].s.indexOf(".") === -1) return events.slice(0, i + 1);
+  }
+  return events;
+}
+
+async function importSolve() {
+  const lines = $("puzzle").value.split(/\r?\n/).map((l) => l.trim());
+  const line = lines.find((l) => l && !l.startsWith("#"));
+  if (!line) { status("nothing to import \u2014 paste a puzzle or pick an example", "err"); return; }
+  const body = JSON.stringify({
+    puzzle: line,
+    maxSolutions: +$("maxSolutions").value,
+    allowSearch: $("allowSearch").checked,
+  });
+  status("solving\u2026", "warn");
+  let j;
+  try {
+    const r = await fetch("/api/solve", { method: "POST", headers: { "Content-Type": "application/json" }, body });
+    j = await r.json();
+  } catch (e) { status("request failed: " + e, "err"); return; }
+  if (!j.ok) { status("error: " + j.error, "err"); return; }
+  setPlaying(false);
+  S = {
+    events: j.outcome === "unique" ? trimEventsAtFirstSolution(j.events) : j.events,
+    clue: j.puzzle,
+    cursor: 0,
+    playing: false,
+    speed: +$("speed").value || 60,
+    lastT: null,
+    acc: 0,
+  };
+  renderFrame(0);
+  outcomeHtml(j);
+  if (j.outcome !== "none" || j.events.length > 1) play();
+}
+
+$("importBtn").onclick = importSolve;
+$("fileBtn").onclick = () => $("fileInput").click();
+$("fileInput").onchange = () => {
+  const f = $("fileInput").files[0];
+  if (!f) return;
+  const rd = new FileReader();
+  rd.onload = () => { $("puzzle").value = rd.result; importSolve(); $("fileInput").value = ""; };
+  rd.readAsText(f);
+};
+$("puzzle").onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); importSolve(); } };
+// Deep link: /?puzzle=<81-chars> imports and starts immediately.
+const qs = new URLSearchParams(location.search);
+if (qs.get("puzzle")) { $("puzzle").value = qs.get("puzzle"); importSolve(); }
+document.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT") return;
+  if (e.key === " ") { e.preventDefault(); if (S.playing) setPlaying(false); else play(); }
+  if (e.key === "ArrowRight") { step(); }
+  if (e.key === "ArrowLeft") { setPlaying(false); if (S.cursor > 0) { S.cursor--; renderFrame(S.cursor); } }
+});
+renderFrame(0);
+</script>
+</body>
+</html>
