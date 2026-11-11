@@ -240,8 +240,10 @@ pub enum Placer {
     Guess,
     /// Dancing-links row selection.
     Dlx,
-    /// A dancing-links row was deselected (backtracked); the cell is empty.
+    /// A row/cell assignment was deselected (backtracked); the cell is empty.
     Undo,
+    /// Naive backtracking placed a digit at the first empty cell.
+    Naive,
 }
 
 /// Which solving engine to use.
@@ -251,6 +253,9 @@ pub enum Algorithm {
     Propagation,
     /// Knuth's Algorithm X with dancing links (`dlx`).
     DancingLinks,
+    /// Plain cell-by-cell backtracking with no heuristics (`naive`);
+    /// the baseline the other engines are benchmarked against.
+    NaiveBacktracking,
 }
 
 /// Knobs the caller can turn.
@@ -321,6 +326,7 @@ pub fn solve_with(
     match cfg.algorithm {
         Algorithm::Propagation => solve_propagation(grid, cfg, logger),
         Algorithm::DancingLinks => crate::dlx::solve_dlx(grid, cfg, logger),
+        Algorithm::NaiveBacktracking => crate::naive::solve_naive(grid, cfg, logger),
     }
 }
 

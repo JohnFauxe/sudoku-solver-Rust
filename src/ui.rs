@@ -44,6 +44,7 @@ impl StepLogger for EventCollector {
                     Placer::Hidden => "h",
                     Placer::Guess => "g",
                     Placer::Dlx => "d",
+                    Placer::Naive => "b",
                     Placer::Undo => "u",
                 },
             ),
@@ -123,6 +124,7 @@ fn solve_api(body: &str) -> (&'static str, &'static str, String) {
     let alg_name = json_str_field(body, "algorithm").unwrap_or_default();
     let algorithm = match alg_name.as_str() {
         "dlx" => Algorithm::DancingLinks,
+        "naive" => Algorithm::NaiveBacktracking,
         _ => Algorithm::Propagation,
     };
     let cfg = SolveConfig {

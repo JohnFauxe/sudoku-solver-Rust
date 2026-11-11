@@ -7,6 +7,7 @@ use std::process::ExitCode;
 
 mod dlx;
 mod grid;
+mod naive;
 mod solver;
 mod tui;
 mod ui;
@@ -23,7 +24,8 @@ USAGE:
                             530070000600195000098000060800060003400803001700020006060000280000419005000080079
                             Drawn grids (spaces and | - + separators) are accepted too.
   sudoku --dlx <PUZZLE>     Solve with Knuth's dancing links (Algorithm X)
-  sudoku -a --algorithm=mrv|dlx   Pick the engine (default mrv).
+  sudoku --naive <PUZZLE>   Solve with plain cell-by-cell backtracking
+  sudoku -a --algorithm=mrv|dlx|naive   Pick the engine (default mrv).
   sudoku -w --watch <PUZZLE>  Live view: shows the imported puzzle, then
                               animates the grid as the solver fills it in.
   sudoku --fps=<N> <PUZZLE>   Animation speed for --watch, frames per
@@ -38,10 +40,14 @@ USAGE:
   sudoku -h | --help        Show this help.
 
 ALGORITHMS:
-  mrv  constraint propagation (naked + hidden singles)
-       then backtracking on the most-constrained cell (default)
-  dlx  Knuth's Algorithm X via dancing links, Sudoku modeled as
-       exact cover (324 constraints); also selectable in the UI
+  mrv    constraint propagation (naked + hidden singles)
+         then backtracking on the most-constrained cell (default)
+  dlx    Knuth's Algorithm X via dancing links, Sudoku modeled as
+         exact cover (324 constraints)
+  naive  plain cell-by-cell backtracking, first-fit digits 1..=9,
+         no heuristics — the benchmark baseline. May run for a very
+         long time on hard or unsolvable puzzles.
+  All three are also selectable in the browser UI.
 
 DIFFICULTY (rough):
   Easy    - solved with naked singles only
@@ -105,6 +111,7 @@ fn run(args: &[String]) -> Exit {
             "--ui" | "--serve" => ui = true,
             "--no-open" => open_browser = false,
             "--dlx" => algorithm = Algorithm::DancingLinks,
+            "--naive" | "--brute" => algorithm = Algorithm::NaiveBacktracking,
             "-a" | "--algorithm" => match args.get(i + 1).map(|s| s.as_str()) {
                 Some("mrv") => {
                     algorithm = Algorithm::Propagation;
@@ -114,8 +121,12 @@ fn run(args: &[String]) -> Exit {
                     algorithm = Algorithm::DancingLinks;
                     i += 1;
                 }
+                Some("naive") | Some("brute") | Some("backtracking") => {
+                    algorithm = Algorithm::NaiveBacktracking;
+                    i += 1;
+                }
                 other => {
-                    eprintln!("error: unknown algorithm {other:?} (use mrv or dlx)");
+                    eprintln!("error: unknown algorithm {other:?} (use mrv, dlx or naive)");
                     eprint!("{USAGE}");
                     return USAGE_ERROR;
                 }
@@ -123,8 +134,9 @@ fn run(args: &[String]) -> Exit {
             v if v.starts_with("--algorithm=") => match v.trim_start_matches("--algorithm=") {
                 "mrv" => algorithm = Algorithm::Propagation,
                 "dlx" | "dancing" | "dancing-links" => algorithm = Algorithm::DancingLinks,
+                "naive" | "brute" | "backtracking" => algorithm = Algorithm::NaiveBacktracking,
                 other => {
-                    eprintln!("error: unknown algorithm {other:?} (use mrv or dlx)");
+                    eprintln!("error: unknown algorithm {other:?} (use mrv, dlx or naive)");
                     eprint!("{USAGE}");
                     return USAGE_ERROR;
                 }
@@ -281,6 +293,7 @@ fn report_solve(grid: &Grid, algorithm: Algorithm) -> Exit {
             let tier = match algorithm {
                 Algorithm::Propagation => stats.difficulty().to_string(),
                 Algorithm::DancingLinks => "dancing links".to_string(),
+                Algorithm::NaiveBacktracking => "naive backtracking".to_string(),
             };
             out(format_args!(
                 "Solution ({}):\n{solution}\n\

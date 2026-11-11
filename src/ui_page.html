@@ -69,6 +69,7 @@ input[type=checkbox] { accent-color: #7d6bff; }
         <select id="algorithm">
           <option value="mrv" selected>propagation + MRV</option>
           <option value="dlx">dancing links (Algorithm X)</option>
+          <option value="naive">naive backtracking</option>
         </select>
       </div>
       <div class="row">
@@ -161,7 +162,8 @@ function renderFrame(idx) {
     : ev.p === "h" ? "hidden single"
     : ev.p === "g" ? "search guess"
     : ev.p === "d" ? "DLX selection"
-    : "DLX backtrack (undo)";
+    : ev.p === "b" ? "naive placement"
+    : "backtrack (undo)";
   $("eventline").textContent = "event " + idx + " / " + (S.events.length - 1) + " \u2014 " + who +
      " (" + filled + "/81 cells)";
 }

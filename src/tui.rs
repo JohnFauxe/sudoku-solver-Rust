@@ -174,6 +174,7 @@ pub fn watch(puzzle: &str, fps: u32, algorithm: Algorithm) -> Exit {
             let tier = match algorithm {
                 Algorithm::Propagation => stats.difficulty().to_string(),
                 Algorithm::DancingLinks => "dancing links".to_string(),
+                Algorithm::NaiveBacktracking => "naive backtracking".to_string(),
             };
             w.render_final(
                 solution.cells(),
