@@ -33,7 +33,11 @@ cargo build --release
 
 # Choose the solving engine
 ./target/release/sudoku --dlx <PUZZLE>       # Knuth's dancing links (Algorithm X)
+./target/release/sudoku --naive <PUZZLE>     # plain cell-by-cell backtracking
 ./target/release/sudoku --algorithm=mrv <PUZZLE>   # default: propagation + MRV
+
+# Benchmark: race all engines on one puzzle, print per-solve timings
+./target/release/sudoku --bench <PUZZLE>
 
 # Watch mode: live view of the solver populating the grid
 # (clues stay bold white; fresh moves in green, latest in cyan,
@@ -70,9 +74,12 @@ cargo build --release
 |--------|-------|-------|
 | `mrv`  | bitmask candidates: naked + hidden singles, then MRV backtracking | reports which technique placed each cell; "singles only" mode available |
 | `dlx`  | exact cover: 324 constraints (cell/row/col/box x digit), 729 placement rows, dancing links with Knuth's S heuristic | every row selection/deselection is a step; typically ~2x faster end-to-end |
+| `naive` | cell-by-cell first-fit backtracking, no heuristics | the benchmark baseline; can explode on hard/unsolvable puzzles |
 
-Both engines emit the same step-event stream, so the terminal `--watch`
+All three engines emit the same step-event stream, so the terminal `--watch`
 mode and the browser window animate either engine identically.
+Use `--bench` to race them on a puzzle — timings, work counts and a
+correctness cross-check between engines.
 
 ## Exit codes
 
@@ -91,6 +98,9 @@ mode and the browser window animate either engine identically.
   step-event logging, unit tests
 - `src/dlx.rs` — dancing links engine: exact-cover model, cover/uncover,
   S heuristic, clue pre-coverage, unit tests
+- `src/naive.rs` — naive engine: cell-by-cell first-fit backtracking
+- `src/bench.rs` — `--bench`: adaptive-timing race of all engines with
+  correctness cross-check
 - `src/tui.rs` — `--watch` live view: ANSI screen, step throttling,
   outcome footers
 - `src/ui.rs` + `src/ui_page.html` — `--ui` browser window: std-only

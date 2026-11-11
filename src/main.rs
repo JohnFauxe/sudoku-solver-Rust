@@ -5,6 +5,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::process::ExitCode;
 
+mod bench;
 mod dlx;
 mod grid;
 mod naive;
@@ -25,6 +26,9 @@ USAGE:
                             Drawn grids (spaces and | - + separators) are accepted too.
   sudoku --dlx <PUZZLE>     Solve with Knuth's dancing links (Algorithm X)
   sudoku --naive <PUZZLE>   Solve with plain cell-by-cell backtracking
+  sudoku --bench <PUZZLE>   Race all engines (mrv, dlx, naive) on one
+                            puzzle; prints per-solve timings and a
+                            correctness cross-check.
   sudoku -a --algorithm=mrv|dlx|naive   Pick the engine (default mrv).
   sudoku -w --watch <PUZZLE>  Live view: shows the imported puzzle, then
                               animates the grid as the solver fills it in.
@@ -98,6 +102,7 @@ fn run(args: &[String]) -> Exit {
     let mut port: u16 = 8173;
     let mut open_browser = true;
     let mut algorithm = Algorithm::Propagation;
+    let mut bench = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -112,6 +117,7 @@ fn run(args: &[String]) -> Exit {
             "--no-open" => open_browser = false,
             "--dlx" => algorithm = Algorithm::DancingLinks,
             "--naive" | "--brute" => algorithm = Algorithm::NaiveBacktracking,
+            "--bench" => bench = true,
             "-a" | "--algorithm" => match args.get(i + 1).map(|s| s.as_str()) {
                 Some("mrv") => {
                     algorithm = Algorithm::Propagation;
@@ -217,6 +223,21 @@ fn run(args: &[String]) -> Exit {
             return USAGE_ERROR;
         }
         ui::serve(port, open_browser)
+    }
+
+    if bench {
+        if watch || file.is_some() || ui || puzzle.is_none() {
+            eprintln!("error: --bench needs exactly one puzzle argument (and nothing else)");
+            return USAGE_ERROR;
+        }
+        let grid = match Grid::parse(puzzle.as_deref().unwrap_or("")) {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("error: bad puzzle: {e}");
+                return FAIL;
+            }
+        };
+        return bench::run(&grid);
     }
 
     match (puzzle, file) {
