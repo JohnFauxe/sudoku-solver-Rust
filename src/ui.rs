@@ -1,8 +1,11 @@
 //! `--ui` mode: a local web server (std-only) that opens the browser UI.
 //!
-//!  - `GET /`          -> the embedded page (`ui_page.html`)
-//!  - `POST /api/solve` -> JSON { puzzle, maxSolutions, allowSearch } and the
+//!  - `GET /`            -> the embedded page (`ui_page.html`)
+//!  - `POST /api/solve`   -> JSON { puzzle, maxSolutions, allowSearch } and the
 //!    full step/event log, which the page animates with playback controls.
+//!  - `POST /api/transcribe` -> JSON { w, h, data } (canvas pixels, base64)
+//!    and the OCR transcription (classic 9x9 or samurai), the engine of
+//!    `--transcribe`.
 //!
 //! Listens on 127.0.0.1 only. No dependencies: hand-rolled HTTP + JSON.
 
@@ -66,15 +69,29 @@ pub fn serve(port: u16, open_browser: bool) -> ! {
     let addr = listener.local_addr().expect("addr");
     let url = format!("http://{addr}");
     println!("sudoku UI listening on {url}  (Ctrl-C to stop)");
-    println!("  opening your browser… (use --no-open to skip)");
-    let _ = std::io::Write::flush(&mut std::io::stdout());
     if open_browser {
-        let opened = ["xdg-open", "open", "x-www-browser"]
-            .iter()
-            .any(|cmd| std::process::Command::new(cmd).arg(&url).spawn().is_ok());
-        if !opened {
+        println!("  opening your browser… (use --no-open to skip)");
+        // Open in a helper thread: the opener (e.g. xdg-open handing the URL
+        // to an already-running browser) often prints Chromium launch noise
+        // like "Failed sending zygote boot message: Broken pipe" — give it
+        // null stdio so that never lands on our terminal, and wait() for it
+        // here so it doesn't linger as a zombie child of the server.
+        let url2 = url.clone();
+        thread::spawn(move || {
+            for cmd in ["xdg-open", "open", "x-www-browser"] {
+                let child = std::process::Command::new(cmd)
+                    .arg(&url2)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+                if let Ok(mut child) = child {
+                    let _ = child.wait();
+                    return;
+                }
+            }
             println!("  could not auto-open a browser; visit the URL above.");
-        }
+        });
     }
 
     for stream in listener.incoming() {
@@ -106,6 +123,10 @@ fn route(method: &str, raw_path: &str, body: Vec<u8>) -> (&'static str, &'static
             Ok(text) => solve_api(&text),
             Err(_) => error_response("request body is not UTF-8"),
         },
+        ("POST", "/api/transcribe") => match String::from_utf8(body) {
+            Ok(text) => transcribe_api(&text),
+            Err(_) => error_response("request body is not UTF-8"),
+        },
         ("GET", _) => ("404 Not Found", "text/plain", "not found\n".into()),
         _ => ("405 Method Not Allowed", "text/plain", "bad method\n".into()),
     }
@@ -113,6 +134,103 @@ fn route(method: &str, raw_path: &str, body: Vec<u8>) -> (&'static str, &'static
 
 fn error_response(msg: &str) -> (&'static str, &'static str, String) {
     ("400 Bad Request", "application/json", format!(r#"{{"ok":false,"error":"{}"}}"#, json_escape(msg)))
+}
+
+/// `POST /api/transcribe`: body `{"w":N,"h":N,"data":"<base64 RGBA>"}` — the
+/// page decodes any image format on a canvas and hands over raw pixels; the
+/// server runs the same OCR the `--transcribe` CLI uses (classic 9x9 or
+/// samurai, auto-detected).
+fn transcribe_api(body: &str) -> (&'static str, &'static str, String) {
+    let (Some(w), Some(h), Some(data)) = (
+        json_num_field(body, "w").map(|v| v as usize),
+        json_num_field(body, "h").map(|v| v as usize),
+        json_str_field(body, "data"),
+    ) else {
+        return error_response("missing \"w\", \"h\" or \"data\" field");
+    };
+    if w == 0 || h == 0 || w * h > 5000 * 5000 {
+        return error_response("bad image dimensions");
+    }
+    let Some(rgba) = b64_decode(&data) else {
+        return error_response("bad base64 image data");
+    };
+    if rgba.len() < w * h * 4 {
+        return error_response("image data shorter than w*h*4 bytes");
+    }
+    let mut rgb = vec![0u8; w * h * 3];
+    for i in 0..w * h {
+        let (mut r, mut g, mut b) = (rgba[i * 4], rgba[i * 4 + 1], rgba[i * 4 + 2]);
+        let a = rgba[i * 4 + 3];
+        if a != 255 {
+            // composite over white, like the page background
+            r = ((r as u32 * a as u32 + 255 * (255 - a as u32)) / 255) as u8;
+            g = ((g as u32 * a as u32 + 255 * (255 - a as u32)) / 255) as u8;
+            b = ((b as u32 * a as u32 + 255 * (255 - a as u32)) / 255) as u8;
+        }
+        rgb[i * 3] = r;
+        rgb[i * 3 + 1] = g;
+        rgb[i * 3 + 2] = b;
+    }
+    let raster = crate::ocr::Raster { w, h, rgb };
+    match crate::ocr::transcribe(&raster) {
+        Ok(t) => {
+            let rows: Vec<String> = t.rows.iter().map(|v| format!("{v:.1}")).collect();
+            let cols: Vec<String> = t.cols.iter().map(|v| format!("{v:.1}")).collect();
+            let cells: Vec<String> =
+                t.cells.iter().map(|&(r, c)| format!("[{r},{c}]")).collect();
+            let unknown: Vec<String> =
+                t.unknown.iter().map(|&(r, c)| format!("[{r},{c}]")).collect();
+            let warnings: Vec<String> =
+                t.warnings.iter().map(|s| format!("\"{}\"", json_escape(s))).collect();
+            let json = format!(
+                concat!(
+                    r#"{{"ok":true,"k":{},"text":"{}","rows":[{}],"cols":[{}],"#,
+                    r#""cells":[{}],"unknown":[{}],"warnings":[{}]}}"#
+                ),
+                t.k,
+                json_escape(&t.text),
+                rows.join(","),
+                cols.join(","),
+                cells.join(","),
+                unknown.join(","),
+                warnings.join(","),
+            );
+            ("200 OK", "application/json", json)
+        }
+        Err(e) => error_response(&e.to_string()),
+    }
+}
+
+/// Standard base64 (with padding); used only for request bodies from our own page.
+fn b64_decode(s: &str) -> Option<Vec<u8>> {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut rev = [255u8; 256];
+    for (i, &c) in T.iter().enumerate() {
+        rev[c as usize] = i as u8;
+    }
+    let bytes: Vec<u8> = s.bytes().filter(|&c| c != b'=').collect();
+    if (s.len() - bytes.len()) > 2 || bytes.len() % 4 == 1 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(bytes.len() * 3 / 4);
+    for chunk in bytes.chunks(4) {
+        let mut acc = 0u32;
+        for (i, &c) in chunk.iter().enumerate() {
+            let v = rev[c as usize];
+            if v == 255 {
+                return None;
+            }
+            acc |= (v as u32) << (18 - 6 * i);
+        }
+        out.push((acc >> 16) as u8);
+        if chunk.len() > 2 {
+            out.push((acc >> 8) as u8);
+        }
+        if chunk.len() > 3 {
+            out.push(acc as u8);
+        }
+    }
+    Some(out)
 }
 
 fn solve_api(body: &str) -> (&'static str, &'static str, String) {

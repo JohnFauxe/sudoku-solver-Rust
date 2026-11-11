@@ -45,6 +45,14 @@ cargo build --release
 ./target/release/sudoku --samurai -f samurai.txt
 ./target/release/sudoku --dlx "$(cat samurai441.txt)"
 
+# Transcribe puzzle image(s) into text — classic 9x9 (81 characters) or
+# samurai (441-char single line); the shape is auto-detected from the grid
+# (PNG; --pretty also prints a readable grid view; consistency problems
+# in the reading become warnings on stderr)
+./target/release/sudoku --transcribe puzzle1.png puzzle2.png
+./target/release/sudoku --transcribe --pretty puzzle1.png
+./target/release/sudoku "$(./target/release/sudoku --transcribe puzzle1.png)"   # transcribe + solve
+
 # Watch mode: live view of the solver populating the grid# (clues stay bold white; fresh moves in green, latest in cyan,
 #  backtracked cells flash gray; animation stays within ~1-10 s)
 ./target/release/sudoku -w --fps=30 <PUZZLE>
@@ -75,6 +83,15 @@ cases. Samurai input: 21 lines of 21 characters (`-`/space = hole) or a
 
 - **Import**: paste a puzzle (compact or drawn grid), "open file…",
   or click an example. `/​?puzzle=<81 chars>` deep-links too.
+- **Import from a screenshot**: Ctrl-V a screen-clip of a puzzle
+  anywhere on the page — Samurai or 9x9 — or drop an image file / use
+  the "paste screenshot" button. Clips are read by the **server
+  engine** (`POST /api/transcribe`, the same OCR as `--transcribe`:
+  grid detection for both shapes, glyph clustering, font templates with
+  a bijective digit assignment); a server failure falls back to the
+  **in-page OCR**. A preview marks every read cell (green = confident,
+  red = verify), the extracted text lands in the import box for quick
+  fixes, and it auto-imports and solves.
 - **Configure**: engine (propagation + MRV or dancing links), stop
   after N solutions (1 = first found, 2 = prove uniqueness), and
   search on/off — "singles only" runs stall on hard puzzles by design.
@@ -122,7 +139,15 @@ correctness cross-check between engines.
 - `src/tui.rs` — `--watch` live view: ANSI screen, step throttling,
   outcome footers
 - `src/ui.rs` + `src/ui_page.html` — `--ui` browser window: std-only
-  local web server, embedded page, JSON step-event API
+  local web server, embedded page, JSON step-event API; screenshot
+  import (paste / drop / file) served by the transcriber with an
+  in-page fallback
+- `src/ocr.rs` + `src/ocr_data.rs` — `--transcribe` and the OCR engine:
+  hand-rolled PNG decoder (DEFLATE included), grid detection for both
+  classic 9x9 and samurai shapes,
+  glyph clustering, embedded font-template matching with bijective
+  digit assignment — a Rust port of the reference tool
+  (`samurai_transcribe.py`)
 - `src/main.rs` — CLI
 
 ## Tests

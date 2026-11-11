@@ -42,6 +42,9 @@ input[type=checkbox] { accent-color: #7d6bff; }
 .stats { font-size: 12px; color: #8a93a6; margin-top: 6px; min-height: 1em; }
 .eventline { font-size: 11px; color: #6b7488; margin-top: 4px; }
 .examples button { font-size: 12px; padding: 5px 9px; }
+.card.drop { outline: 2px dashed #7d6bff; outline-offset: -4px; }
+#shotCanvas { width: 100%; border: 1px solid #2a3040; border-radius: 6px; background: #0d1017; display: block; }
+#shotNote { font-size: 11px; color: #8a93a6; }
 </style>
 </head>
 <body>
@@ -52,12 +55,17 @@ input[type=checkbox] { accent-color: #7d6bff; }
 <main>
   <div class="panel">
     <div class="card">
-      <label>import puzzle — 81 characters (1-9 = clues, 0 or . = empty), or a drawn grid</label>
+      <label>import puzzle — Ctrl-V a screen-clip of a puzzle (Samurai or 9x9), or type 81 characters / a drawn grid</label>
       <textarea id="puzzle" spellcheck="false" placeholder="530070000600195000098000060800060003400803001700020006060000280000419005000080079"></textarea>
       <div class="row">
         <button id="importBtn" class="primary">import &amp; watch</button>
+        <button id="shotBtn" title="Read a screen-clip of a puzzle from the clipboard (or Ctrl-V, or drop an image file)">paste screenshot</button>
         <button id="fileBtn">open file…</button>
-        <input type="file" id="fileInput" accept=".txt,.text,.sudoku,text/plain" style="display:none">
+        <input type="file" id="fileInput" accept=".txt,.text,.sudoku,text/plain,image/*" style="display:none">
+      </div>
+      <div id="shotBox" style="display:none">
+        <canvas id="shotCanvas"></canvas>
+        <div id="shotNote"></div>
       </div>
       <label>or try an example</label>
       <div class="row examples" id="examples"></div>
@@ -257,8 +265,12 @@ function trimEventsAtFirstSolution(events) {
 }
 
 async function importSolve() {
-  const lines = $("puzzle").value.split(/\r?\n/).map((l) => l.trim());
-  const line = lines.find((l) => l && !l.startsWith("#"));
+  // Multi-line input (drawn grids, OCR output) is joined into one string;
+  // the backend accepts compact strings and skips separators itself.
+  const line = $("puzzle").value.split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith("#"))
+    .join("");
   if (!line) { status("nothing to import \u2014 paste a puzzle or pick an example", "err"); return; }
   const body = JSON.stringify({
     puzzle: line,
@@ -295,14 +307,517 @@ $("fileBtn").onclick = () => $("fileInput").click();
 $("fileInput").onchange = () => {
   const f = $("fileInput").files[0];
   if (!f) return;
+  if (f.type && f.type.indexOf("image/") === 0) { importImage(f); $("fileInput").value = ""; return; }
   const rd = new FileReader();
   rd.onload = () => { $("puzzle").value = rd.result; importSolve(); $("fileInput").value = ""; };
   rd.readAsText(f);
 };
 $("puzzle").onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); importSolve(); } };
+
+// ---------- screenshot import ----------
+// Paste (Ctrl-V) a screen-clip of a puzzle — Samurai cross or 9x9 — and it
+// is read here in the page: the browser decodes the image on a canvas, the
+// grid lattice is found by scanning for long ink runs (the grid lines), each
+// Sudoku cell is sliced out and its digit recognized by template matching
+// against digits rendered locally in the installed fonts. No server help,
+// no dependencies.
+
+const OCR = (() => {
+  // The five 9x9 host grids of a Samurai puzzle on the 21x21 display.
+  const OFFS = [[0, 0], [0, 12], [6, 6], [12, 0], [12, 12]];
+  const FONT_CANDIDATES = ["Arial", "Helvetica", "Verdana", "Tahoma", "Trebuchet MS",
+    "Segoe UI", "Roboto", "Ubuntu", "DejaVu Sans", "Liberation Sans", "Noto Sans",
+    "Open Sans", "Lato", "Calibri", "Cambria", "Georgia", "Times New Roman",
+    "Courier New", "Consolas", "Menlo", "serif", "sans-serif", "monospace"];
+  const N = 32;              // normalized template/glyph size
+  const MIN_RUN_FRAC = 0.18; // a grid line spans >= 9/21 of the grid ~ 43%; allow wide-margined clips
+
+  function isGeneric(f) { return f === "serif" || f === "sans-serif" || f === "monospace" || f === "system-ui"; }
+  function fontStr(weight, size, f) { return weight + " " + size + "px " + (isGeneric(f) ? f : '"' + f + '"'); }
+
+  // Fonts whose rendered widths differ from every generic fallback are the
+  // ones actually installed; the rest would just duplicate templates.
+  function fontList() {
+    const ctx = document.createElement("canvas").getContext("2d");
+    const probe = "MMMMMMMMMM";
+    const width = {};
+    for (const f of FONT_CANDIDATES) {
+      ctx.font = fontStr("400", 40, f);
+      width[f] = ctx.measureText(probe).width;
+    }
+    const anchors = ["serif", "sans-serif", "monospace"].map((g) => width[g]);
+    const out = [];
+    for (const f of FONT_CANDIDATES) {
+      if (isGeneric(f) || !anchors.some((a) => Math.abs(width[f] - a) < 1)) out.push(f);
+    }
+    if (out.length < 3) out.push("serif", "sans-serif", "monospace");
+    return out;
+  }
+
+  function toGray(img) {
+    const w = img.width, h = img.height, d = img.data, g = new Uint8Array(w * h);
+    for (let i = 0, p = 0; i < g.length; i++, p += 4)
+      g[i] = (d[p] * 299 + d[p + 1] * 587 + d[p + 2] * 114) >> 10;
+    return g;
+  }
+
+  // Otsu: the threshold separating the two largest pixel populations.
+  function otsu(g) {
+    const hist = new Uint32Array(256);
+    for (let i = 0; i < g.length; i++) hist[g[i]]++;
+    let sum = 0;
+    for (let t = 0; t < 256; t++) sum += t * hist[t];
+    let wB = 0, sB = 0, best = 0, thr = 127;
+    for (let t = 0; t < 256; t++) {
+      wB += hist[t];
+      if (!wB) continue;
+      const wF = g.length - wB;
+      if (!wF) break;
+      sB += t * hist[t];
+      const mB = sB / wB, mF = (sum - sB) / wF, v = wB * wF * (mB - mF) * (mB - mF);
+      if (v > best) { best = v; thr = t; }
+    }
+    return thr;
+  }
+
+  // Longest ink run along one scan line, tolerating small anti-alias gaps.
+  function maxRun(ink, off, stride, len, gapTol) {
+    let run = 0, best = 0, gap = 0;
+    for (let k = 0; k < len; k++) {
+      if (ink[off + k * stride]) { run += gap + 1; gap = 0; if (run > best) best = run; }
+      else if (++gap > gapTol) { run = 0; gap = 0; }
+    }
+    return best;
+  }
+
+  // Rows/columns whose longest run looks like a grid line, grouped into bands.
+  function lineBands(ink, w, h, horiz) {
+    const outer = horiz ? h : w, inner = horiz ? w : h;
+    const minRun = Math.max(10, Math.floor(MIN_RUN_FRAC * inner));
+    const flag = new Uint8Array(outer);
+    for (let o = 0; o < outer; o++)
+      flag[o] = maxRun(ink, horiz ? o * w : o, horiz ? 1 : w, inner, 3) >= minRun ? 1 : 0;
+    const bands = [];
+    let s = -1;
+    for (let o = 0; o <= outer; o++) {
+      if (o < outer && flag[o]) { if (s < 0) s = o; }
+      else if (s >= 0) { bands.push({ pos: (s + o - 1) / 2, thick: o - s }); s = -1; }
+    }
+    return bands;
+  }
+
+  // Snap line bands to lattice indices 0..K; holes in rendering (only box
+  // borders drawn) or clipped margins are bridged by interpolation.
+  function mapBands(bands, K) {
+    if (bands.length < 3) return null;
+    const first = bands[0].pos, last = bands[bands.length - 1].pos;
+    const cell = (last - first) / K;
+    if (cell < 5) return null;
+    const merged = [];
+    for (const b of bands) {
+      const p = merged[merged.length - 1];
+      if (p && b.pos - p.pos < Math.max(2, cell * 0.45)) {
+        const tot = p.thick + b.thick;
+        p.pos = (p.pos * p.thick + b.pos * b.thick) / tot;
+        p.thick = Math.max(p.thick, b.thick);
+      } else merged.push({ pos: b.pos, thick: b.thick });
+    }
+    if (merged.length > K + 1) return null;
+    const at = new Array(K + 1).fill(null);
+    for (const b of merged) {
+      const e = (b.pos - first) / cell, i = Math.round(e);
+      if (i < 0 || i > K || Math.abs(e - i) > 0.2 || at[i]) return null;
+      at[i] = b.pos;
+    }
+    const out = new Array(K + 1).fill(NaN);
+    let i0 = -1;
+    for (let i = 0; i <= K; i++) {
+      if (at[i] == null) continue;
+      if (i0 >= 0) {
+        for (let j = i0 + 1; j < i; j++) out[j] = out[i0] + (at[i] - out[i0]) * (j - i0) / (i - i0);
+      } else {
+        for (let j = 0; j < i; j++) out[j] = at[i] - (i - j) * cell;
+      }
+      out[i] = at[i];
+      i0 = i;
+    }
+    for (let j = i0 + 1; j <= K; j++) out[j] = out[i0] + (j - i0) * cell;
+    return { pos: out, missing: K + 1 - merged.length };
+  }
+
+  // Try both shapes; the lattice with fewer interpolated lines wins.
+  function fitGrid(ink, w, h) {
+    const bh = lineBands(ink, w, h, true), bv = lineBands(ink, w, h, false);
+    let best = null;
+    for (const K of (bh.length - 1 <= 9 && bv.length - 1 <= 9 ? [9, 21] : [21, 9])) {
+      const rows = mapBands(bh, K), cols = mapBands(bv, K);
+      if (rows && cols && (!best || rows.missing + cols.missing < best.missing))
+        best = { K, rows: rows.pos, cols: cols.pos, missing: rows.missing + cols.missing };
+    }
+    return best;
+  }
+
+  function dot(a, b) { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; }
+
+  function blur3(a, n) {
+    const t = new Float32Array(a.length), o = new Float32Array(a.length);
+    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+      let s = 0, k = 0;
+      for (let dx = -1; dx <= 1; dx++) { const xx = x + dx; if (xx >= 0 && xx < n) { s += a[y * n + xx]; k++; } }
+      t[y * n + x] = s / k;
+    }
+    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+      let s = 0, k = 0;
+      for (let dy = -1; dy <= 1; dy++) { const yy = y + dy; if (yy >= 0 && yy < n) { s += t[yy * n + x]; k++; } }
+      o[y * n + x] = s / k;
+    }
+    return o;
+  }
+
+  // Scale a cropped ink bitmap aspect-preserving into an NxN cell, centered,
+  // with a very light blur so stroke thickness differences hurt less
+  // (kept light on purpose: heavier blurring fills in the holes that tell
+  // 8 from 0 and 6 from 9).
+  function normalize(bw, w, h) {
+    const target = Math.round(N * 0.88), s = target / Math.max(w, h);
+    const ow = Math.max(1, Math.min(N, Math.round(w * s)));
+    const oh = Math.max(1, Math.min(N, Math.round(h * s)));
+    const ox = (N - ow) >> 1, oy = (N - oh) >> 1;
+    const out = new Float32Array(N * N);
+    for (let y = 0; y < oh; y++)
+      for (let x = 0; x < ow; x++)
+        out[(y + oy) * N + x + ox] = bw[Math.min(h - 1, (y / s) | 0) * w + Math.min(w - 1, (x / s) | 0)];
+    return blur3(out, N);
+  }
+
+  let tpl = null;
+  function buildTemplates() {
+    if (tpl) return tpl;
+    const ctx = document.createElement("canvas").getContext("2d", { willReadFrequently: true });
+    ctx.canvas.width = 100;
+    ctx.canvas.height = 100;
+    ctx.fillStyle = "#000";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    tpl = [];
+    for (const f of fontList()) for (const weight of ["400", "700"]) {
+      for (let d = 1; d <= 9; d++) {
+        ctx.clearRect(0, 0, 100, 100);
+        ctx.font = fontStr(weight, 72, f);
+        ctx.fillText(String(d), 50, 52);
+        const data = ctx.getImageData(0, 0, 100, 100).data;
+        let x0 = 100, y0 = 100, x1 = -1, y1 = -1;
+        for (let y = 0; y < 100; y++) for (let x = 0; x < 100; x++)
+          if (data[(y * 100 + x) * 4 + 3] > 127) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+        if (x1 < 0) continue;
+        const bwW = x1 - x0 + 1, bwH = y1 - y0 + 1;
+        const bw = new Uint8Array(bwW * bwH);
+        for (let y = 0; y < bwH; y++) for (let x = 0; x < bwW; x++)
+          bw[y * bwW + x] = data[((y + y0) * 100 + x + x0) * 4 + 3] > 127 ? 1 : 0;
+        const n = normalize(bw, bwW, bwH);
+        tpl.push({ d, n, nn: dot(n, n) });
+      }
+    }
+    return tpl;
+  }
+
+  // Best digit for a cropped glyph: NCC against every template, per-digit max.
+  function classify(bw, w, h, templates) {
+    const g = normalize(bw, w, h), gg = dot(g, g);
+    if (gg <= 0) return null;
+    const top = new Float32Array(10);
+    for (const t of templates) {
+      const s = dot(g, t.n) / Math.sqrt(gg * t.nn);
+      if (s > top[t.d]) top[t.d] = s;
+    }
+    let bd = 1;
+    for (let d = 2; d <= 9; d++) if (top[d] > top[bd]) bd = d;
+    let sd = 0, second = 0;
+    for (let d = 1; d <= 9; d++) if (d !== bd && top[d] > second) { second = top[d]; sd = d; }
+    return { d: bd, s: top[bd], m: top[bd] - second, sd };
+  }
+
+  // Extract and read one cell: union the ink components that do not touch
+  // the window border (border ink is grid line bleed), bbox -> digit/empty.
+  // Small insets only: a tall digit must never be clipped, or 9 starts
+  // looking like 8 and 2 like 3.
+  function readCell(ink, w, fit, r, c, templates) {
+    const x0 = fit.cols[c], x1 = fit.cols[c + 1], y0 = fit.rows[r], y1 = fit.rows[r + 1];
+    const cw = x1 - x0, ch = y1 - y0;
+    if (cw < 10 || ch < 10) return {};
+    const inset = Math.max(2, Math.round(Math.min(cw, ch) * 0.09));
+    const wx0 = x0 + inset, wx1 = x1 - inset, wy0 = y0 + inset, wy1 = y1 - inset;
+    const ww = wx1 - wx0, wh = wy1 - wy0;
+    if (ww < 4 || wh < 4) return {};
+    // connected components of ink inside the window (8-connected, BFS)
+    const seen = new Uint8Array(ww * wh);
+    let bx0 = 1e9, by0 = 1e9, bx1 = -1, by1 = -1, cnt = 0;
+    const stack = [];
+    for (let sy = 0; sy < wh; sy++) for (let sx = 0; sx < ww; sx++) {
+      if (seen[sy * ww + sx] || !ink[(wy0 + sy) * w + wx0 + sx]) continue;
+      // flood one component
+      stack.length = 0;
+      stack.push(sx, sy);
+      seen[sy * ww + sx] = 1;
+      let cx0 = sx, cy0 = sy, cx1 = sx, cy1 = sy, n = 0, touches = false;
+      while (stack.length) {
+        const py = stack.pop(), px = stack.pop();
+        n++;
+        if (px < cx0) cx0 = px;
+        if (px > cx1) cx1 = px;
+        if (py < cy0) cy0 = py;
+        if (py > cy1) cy1 = py;
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+          const nx = px + dx, ny = py + dy;
+          if (nx < 0 || nx >= ww || ny < 0 || ny >= wh || seen[ny * ww + nx]) continue;
+          if (!ink[(wy0 + ny) * w + wx0 + nx]) continue;
+          seen[ny * ww + nx] = 1;
+          stack.push(nx, ny);
+        }
+      }
+      if (n < 3) continue; // speck
+      if (cx0 === 0 || cy0 === 0 || cx1 === ww - 1 || cy1 === wh - 1) continue; // line bleed
+      if (cx0 < bx0) bx0 = cx0;
+      if (cy0 < by0) by0 = cy0;
+      if (cx1 > bx1) bx1 = cx1;
+      if (cy1 > by1) by1 = cy1;
+      cnt += n;
+    }
+    if (cnt < 8 || bx1 < 0) return {};
+    const bwW = bx1 - bx0 + 1, bwH = by1 - by0 + 1;
+    if (bwH < ch * 0.16) return {}; // a speck or dot, not a digit
+    const bw = new Uint8Array(bwW * bwH);
+    for (let y = 0; y < bwH; y++)
+      for (let x = 0; x < bwW; x++)
+        bw[y * bwW + x] = ink[(y + by0 + wy0) * w + x + bx0 + wx0];
+    const best = classify(bw, bwW, bwH, templates);
+    if (!best) return {};
+    return { d: best.d, ok: best.s >= 0.55 && best.m >= 0.045, s: best.s, m: best.m, sd: best.sd };
+  }
+
+  function cellMask(K) {
+    const m = Array.from({ length: K }, () => new Array(K).fill(K === 9));
+    if (K === 9) return m;
+    for (const off of OFFS)
+      for (let r = 0; r < 9; r++) for (let c = 0; c < 9; c++) m[off[0] + r][off[1] + c] = true;
+    return m;
+  }
+
+  function finish(ink, w, h, fit, templates) {
+    const mask = cellMask(fit.K);
+    const lines = [], marks = [];
+    let digits = 0;
+    for (let r = 0; r < fit.K; r++) {
+      let line = "";
+      for (let c = 0; c < fit.K; c++) {
+        if (!mask[r][c]) { line += "-"; continue; }
+        const cls = readCell(ink, w, fit, r, c, templates);
+        if (cls.d) { line += String(cls.d); digits++; marks.push({ r, c, ok: cls.ok, s: cls.s, m: cls.m, sd: cls.sd }); }
+        else line += ".";
+      }
+      lines.push(line);
+    }
+    if (digits < 10)
+      return { err: "only " + digits + " digit(s) recognized \u2014 is this a screen-clip of a puzzle?" };
+    return { K: fit.K, rows: fit.rows, cols: fit.cols, w, h, lines, marks, digits };
+  }
+
+  function run(img) {
+    const w = img.width, h = img.height;
+    const gray = toGray(img);
+    const thr0 = otsu(gray);
+    let darks = 0;
+    for (let i = 0; i < gray.length; i++) if (gray[i] < thr0) darks++;
+    const darkIsInk = darks <= gray.length - darks; // text is the minority side
+    const templates = buildTemplates();
+    for (const dt of [0, 40, 75]) {
+      // Retry with a lighter threshold: grid lines are often drawn pale gray,
+      // far above the text/background split Otsu finds.
+      const thr = Math.min(250, thr0 + dt);
+      const ink = new Uint8Array(w * h);
+      if (darkIsInk) for (let i = 0; i < ink.length; i++) ink[i] = gray[i] < thr ? 1 : 0;
+      else for (let i = 0; i < ink.length; i++) ink[i] = gray[i] > thr ? 1 : 0;
+      const fit = fitGrid(ink, w, h);
+      if (fit) return finish(ink, w, h, fit, templates);
+    }
+    return { err: "no sudoku grid found in the image \u2014 the clip needs the full grid lines" };
+  }
+
+  return { run };
+})();
+
+function loadBitmap(blob) {
+  return new Promise((res, rej) => {
+    const url = URL.createObjectURL(blob);
+    const im = new Image();
+    im.onload = () => { URL.revokeObjectURL(url); res(im); };
+    im.onerror = () => { URL.revokeObjectURL(url); rej(new Error("not a decodable image")); };
+    im.src = url;
+  });
+}
+
+// Base64 of a byte array (chunked to stay inside the JS stack limit).
+function b64of(bytes) {
+  let s = "";
+  for (let i = 0; i < bytes.length; i += 0x8000)
+    s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+// Server-side transcription: hand the canvas pixels to the backend, which
+// runs the same OCR engine as `sudoku --transcribe` (glyph clustering plus
+// font-template matching with a digit<->cluster bijection). Returns a
+// result shaped like the in-page OCR, or null on any failure (the caller
+// falls back to the in-page engine).
+async function serverTranscribe(c) {
+  const pixels = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
+  const r = await fetch("/api/transcribe", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ w: c.width, h: c.height, data: b64of(pixels) }),
+  });
+  const j = await r.json();
+  if (!r.ok || !j.ok) return null;
+  return {
+    K: j.k || 21,
+    rows: j.rows,
+    cols: j.cols,
+    digits: j.cells.length,
+    engine: "server",
+    warnings: j.warnings,
+    marks: j.cells.map(([r, c]) => ({ r, c, ok: true }))
+      .concat(j.unknown.map(([r, c]) => ({ r, c, ok: false }))),
+    text: j.text,
+  };
+}
+
+async function importImage(blob) {
+  status("reading screenshot\u2026", "warn");
+  let img;
+  try { img = await loadBitmap(blob); }
+  catch (e) { status("cannot decode image: " + e.message, "err"); return; }
+  const scale = Math.min(1, 1600 / Math.max(img.width, img.height));
+  const cw = Math.max(1, Math.round(img.width * scale));
+  const chh = Math.max(1, Math.round(img.height * scale));
+  const c = document.createElement("canvas");
+  c.width = cw; c.height = chh;
+  const x = c.getContext("2d", { willReadFrequently: true });
+  x.drawImage(img, 0, 0, cw, chh);
+
+  let res = null, byServer = true;
+  try { res = await serverTranscribe(c); } catch (e) { res = null; }
+  if (!res) {
+    byServer = false;
+    try { res = OCR.run(x.getImageData(0, 0, cw, chh)); }
+    catch (e) { status("screenshot import failed: " + e, "err"); return; }
+    if (res.err) { status("screenshot import: " + res.err, "err"); return; }
+    res.text = res.lines.join("\n");
+    res.engine = "in-page";
+  }
+  $("puzzle").value = res.text;
+  showShot(c, res);
+  importSolve();
+  void byServer;
+  return res;
+}
+
+// Preview of the pasted shot: green boxes = confidently read digits,
+// red boxes = uncertain (verify against the text in the box above).
+function showShot(srcCanvas, res) {
+  const box = $("shotBox"), pc = $("shotCanvas");
+  box.style.display = "";
+  const W = Math.max(280, Math.min(460, box.clientWidth - 2));
+  const S = W / srcCanvas.width;
+  pc.width = W;
+  pc.height = Math.max(1, Math.round(srcCanvas.height * S));
+  const x = pc.getContext("2d");
+  x.drawImage(srcCanvas, 0, 0, pc.width, pc.height);
+  x.lineWidth = 1.5;
+  let unsure = 0;
+  for (const m of res.marks) {
+    if (!m.ok) unsure++;
+    x.strokeStyle = m.ok ? "rgba(125,255,138,.85)" : "rgba(255,109,109,.95)";
+    const px = res.cols[m.c] * S, py = res.rows[m.r] * S;
+    const pw = (res.cols[m.c + 1] - res.cols[m.c]) * S, ph = (res.rows[m.r + 1] - res.rows[m.r]) * S;
+    x.strokeRect(px + 1, py + 1, Math.max(2, pw - 2), Math.max(2, ph - 2));
+  }
+  $("shotNote").textContent = (res.K === 21 ? "Samurai" : "9\u00d79") + " grid \u2014 read " + res.digits +
+    " digits" + (unsure ? ", " + unsure + " unsure (red)" : ", all confident") +
+    " \u2014 " + (res.engine === "server" ? "read by the server engine" : "read in the page") +
+    (res.warnings && res.warnings.length ? " \u2014 " + res.warnings.join("; ") : "") +
+    " \u2014 text is in the box above; fix anything odd, then import.";
+}
+
+// Paste anywhere on the page; also a clipboard button and drag & drop.
+document.addEventListener("paste", (e) => {
+  const items = e.clipboardData && e.clipboardData.items;
+  if (!items) return;
+  for (const item of items) {
+    if (item.type && item.type.indexOf("image/") === 0) {
+      e.preventDefault();
+      const f = item.getAsFile();
+      if (f) importImage(f);
+      return;
+    }
+  }
+});
+
+$("shotBtn").onclick = async () => {
+  if (!(navigator.clipboard && navigator.clipboard.read)) {
+    status("this browser cannot read the clipboard from a button \u2014 press Ctrl-V instead", "warn");
+    return;
+  }
+  try {
+    const items = await navigator.clipboard.read();
+    for (const item of items) {
+      const type = item.types.find((t) => t.indexOf("image/") === 0);
+      if (type) { importImage(await item.getType(type)); return; }
+    }
+    status("no image on the clipboard \u2014 take a screen-clip first", "warn");
+  } catch (e) {
+    status("clipboard unavailable (" + e.name + ") \u2014 press Ctrl-V anywhere on this page instead", "warn");
+  }
+};
+
+const importCard = document.querySelector(".panel .card");
+["dragenter", "dragover"].forEach((t) => importCard.addEventListener(t, (e) => { e.preventDefault(); importCard.classList.add("drop"); }));
+["dragleave", "drop"].forEach((t) => importCard.addEventListener(t, (e) => { e.preventDefault(); importCard.classList.remove("drop"); }));
+importCard.addEventListener("drop", (e) => {
+  const f = [...(e.dataTransfer.files || [])].find((f) => f.type && f.type.indexOf("image/") === 0);
+  if (f) importImage(f);
+});
+
 // Deep link: /?puzzle=<81-chars> imports and starts immediately.
 const qs = new URLSearchParams(location.search);
 if (qs.get("puzzle")) { $("puzzle").value = qs.get("puzzle"); importSolve(); }
+// ?shot=<same-origin url>: OCR an image on load (test hook).
+if (qs.get("shot")) {
+  fetch(qs.get("shot"))
+    .then((r) => { if (!r.ok) throw new Error("HTTP " + r.status); return r.blob(); })
+    .then((b) => importImage(b))
+    .then((res) => {
+      // headless-test dumps: recognized text + per-cell stats. Server and
+      // in-page results carry either "text" (single line) or "lines".
+      const per = res.K === 9 ? /.{1,9}/g : /.{1,21}/g;
+      const rows21 =
+        res.lines || (res.text ? res.text.match(per) || [] : []);
+      if (res && res.marks) {
+        const st = document.createElement("div"); // headless-test dump of confidence stats
+        st.id = "shotStats";
+        st.style.display = "none";
+        st.textContent = JSON.stringify(
+          res.marks.map((mk) => [Number(rows21[mk.r][mk.c]), mk.s, mk.m, mk.sd])
+        );
+        document.body.appendChild(st);
+      }
+      const pre = document.createElement("div"); // headless-test dump of the recognized text
+      pre.id = "shotDump";
+      pre.style.display = "none";
+      pre.textContent = res.text || rows21.join("\n");
+      document.body.appendChild(pre);
+    })
+    .catch((e) => status("screenshot load failed: " + e, "err"));
+}
 document.addEventListener("keydown", (e) => {
   if (e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT") return;
   if (e.key === " ") { e.preventDefault(); if (S.playing) setPlaying(false); else play(); }

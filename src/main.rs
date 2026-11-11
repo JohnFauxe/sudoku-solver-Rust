@@ -9,6 +9,8 @@ mod bench;
 mod dlx;
 mod grid;
 mod naive;
+mod ocr;
+mod ocr_data;
 mod solver;
 mod topo;
 mod tui;
@@ -41,11 +43,20 @@ USAGE:
                               animates the grid as the solver fills it in.
   sudoku --fps=<N> <PUZZLE>   Animation speed for --watch, frames per
                               second (default 30).
-  sudoku --ui [--port=<N>]    Browser window: import puzzles, configure the
-                              solver (algorithm included) and watch it solve.
-                              Opens your default browser at
+  sudoku --ui [--port=<N>]    Browser window: import puzzles by typing, from a
+                              file, or by pasting a screen-clip of a puzzle
+                              (Samurai or 9x9; read in the browser). Configure
+                              the solver (algorithm included) and watch it
+                              solve. Opens your default browser at
                               http://127.0.0.1:8173 (--no-open to skip
                               auto-open). Ctrl-C stops the server.
+  sudoku --transcribe IMG...  Read puzzle image(s) - a classic 9x9 grid
+        [--pretty]           or a samurai cross - and print the puzzle text
+                             for each (81 / 441 characters, shape
+                             auto-detected; PNG; the browser UI accepts
+                             any format). --pretty also prints a readable
+                             grid view. Sudoku consistency problems
+                             become stderr warnings.
   sudoku -f <PATH>          Solve every puzzle in a file, one per line.
   sudoku --file=<PATH>      Blank lines and lines starting with '#' are skipped.
   sudoku -h | --help        Show this help.
@@ -103,7 +114,7 @@ fn main() -> ExitCode {
 fn run(args: &[String]) -> Exit {
     let mut watch = false;
     let mut fps: u32 = 30;
-    let mut puzzle: Option<String> = None;
+    let mut positional: Vec<String> = Vec::new();
     let mut file: Option<String> = None;
     let mut ui = false;
     let mut port: u16 = 8173;
@@ -112,6 +123,8 @@ fn run(args: &[String]) -> Exit {
     let mut shape: Option<Shape> = None;
     let mut max_solutions: usize = 2;
     let mut bench = false;
+    let mut transcribe = false;
+    let mut pretty = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -148,6 +161,8 @@ fn run(args: &[String]) -> Exit {
                 }
             },
             "--bench" => bench = true,
+            "-t" | "--transcribe" => transcribe = true,
+            "--pretty" => pretty = true,
             "-a" | "--algorithm" => match args.get(i + 1).map(|s| s.as_str()) {
                 Some("mrv") => {
                     algorithm = Algorithm::Propagation;
@@ -236,19 +251,32 @@ fn run(args: &[String]) -> Exit {
                 return USAGE_ERROR;
             }
             _ => {
-                if puzzle.is_some() {
-                    eprintln!("error: multiple puzzle arguments");
-                    eprint!("{USAGE}");
-                    return USAGE_ERROR;
-                }
-                puzzle = Some(a.clone());
+                positional.push(a.clone());
             }
         }
         i += 1;
     }
 
+    if pretty && !transcribe {
+        eprintln!("error: --pretty only applies to --transcribe");
+        return USAGE_ERROR;
+    }
+
+    if transcribe {
+        if watch || file.is_some() || ui || bench {
+            eprintln!("error: --transcribe is standalone; it takes only image paths");
+            return USAGE_ERROR;
+        }
+        if positional.is_empty() {
+            eprintln!("error: --transcribe needs at least one image path");
+            eprint!("{USAGE}");
+            return USAGE_ERROR;
+        }
+        return transcribe_images(&positional, pretty);
+    }
+
     if ui {
-        if watch || file.is_some() || puzzle.is_some() {
+        if watch || file.is_some() || !positional.is_empty() {
             eprintln!("error: --ui is standalone; it takes no puzzle, --watch or -f");
             return USAGE_ERROR;
         }
@@ -256,11 +284,11 @@ fn run(args: &[String]) -> Exit {
     }
 
     if bench {
-        if watch || file.is_some() || ui || puzzle.is_none() {
+        if watch || file.is_some() || ui || positional.len() != 1 {
             eprintln!("error: --bench needs exactly one puzzle argument (and nothing else)");
             return USAGE_ERROR;
         }
-        let grid = match Grid::parse_shape(puzzle.as_deref().unwrap_or(""), shape) {
+        let grid = match Grid::parse_shape(positional[0].as_str(), shape) {
             Ok(g) => g,
             Err(e) => {
                 eprintln!("error: bad puzzle: {e}");
@@ -269,6 +297,16 @@ fn run(args: &[String]) -> Exit {
         };
         return bench::run(&grid);
     }
+
+    let puzzle = match positional.len() {
+        0 => None,
+        1 => Some(positional.remove(0)),
+        _ => {
+            eprintln!("error: multiple puzzle arguments");
+            eprint!("{USAGE}");
+            return USAGE_ERROR;
+        }
+    };
 
     match (puzzle, file) {
         (Some(p), None) if watch => tui::watch(&p, fps, algorithm, shape),
@@ -293,8 +331,32 @@ fn run(args: &[String]) -> Exit {
     }
 }
 
-fn solve_one(puzzle: &str, algorithm: Algorithm, shape: Option<Shape>, max_solutions: usize) -> Exit {
-    let grid = match Grid::parse_shape(puzzle, shape) {
+/// `--transcribe`: transcribe each image and print the compact text.
+fn transcribe_images(paths: &[String], pretty: bool) -> Exit {
+    let mut worst = OK;
+    for path in paths {
+        match ocr::transcribe_file(path) {
+            Ok(t) => {
+                if pretty {
+                    // grid, one blank line, then the compact text (as the
+                    // reference tool prints it)
+                    out(format_args!("{}\n", ocr::pretty_grid(&t.text, &t.warnings)));
+                }
+                out(format_args!("{}", t.text));
+                for w in &t.warnings {
+                    eprintln!("WARNING: {w}");
+                }
+            }
+            Err(e) => {
+                eprintln!("error: {path}: {e}");
+                worst = FAIL;
+            }
+        }
+    }
+    worst
+}
+
+fn solve_one(puzzle: &str, algorithm: Algorithm, shape: Option<Shape>, max_solutions: usize) -> Exit {    let grid = match Grid::parse_shape(puzzle, shape) {
         Ok(g) => g,
         Err(e) => {
             eprintln!("error: bad puzzle: {e}");
