@@ -3,6 +3,9 @@
 //! screen update (cell colors mark fresh moves and backtracked cells),
 //! throttled to a target frame rate so hard puzzles animate too.
 //!
+//! Works for any topology: classic 9x9 and Samurai 21x21 (five overlapping
+//! grids with holes between them).
+//!
 //! Pure ANSI escapes, zero dependencies. `Ctrl-C` simply terminates; the
 //! terminal keeps its last frame.
 
@@ -10,7 +13,7 @@ use std::fmt::Write as _;
 use std::io::{self, Write as IoWrite};
 use std::time::{Duration, Instant};
 
-use crate::grid::Grid;
+use crate::grid::{cell_char, Grid, Shape};
 use crate::solver::{Algorithm, SolveConfig, SolveOutcome, SolveStats, StepInfo, StepLogger};
 use crate::{Exit, FAIL, MULTI, OK};
 
@@ -19,14 +22,15 @@ use crate::{Exit, FAIL, MULTI, OK};
 struct CountLogger(u64);
 
 impl StepLogger for CountLogger {
-    fn step(&mut self, _cells: &[u8; 81], _info: Option<StepInfo>) {
+    fn step(&mut self, _cells: &[u8], _info: Option<StepInfo>) {
         self.0 += 1;
     }
 }
 
 struct Watch {
-    clues: [u8; 81],
-    shown: [u8; 81],
+    grid: Grid,
+    clues: Vec<u8>,
+    shown: Vec<u8>,
     last: Option<StepInfo>,
     events: u64,
     /// Consider only every N-th solver event as a frame candidate, so the
@@ -34,6 +38,10 @@ struct Watch {
     step_every: u64,
     interval: Duration,
     next_frame: Option<Instant>,
+    /// Column is a box separator for some grid.
+    pipe_col: Vec<bool>,
+    /// Row has a horizontal box separator above it.
+    sep_row: Vec<bool>,
 }
 
 impl Watch {
@@ -42,7 +50,7 @@ impl Watch {
             return "\x1b[1;97m"; // bold white: original clue
         }
         if let Some(info) = &self.last {
-            if info.idx == idx && info.digit == d {
+            if info.idx == idx && info.digit == d && d != 0 {
                 return "\x1b[1;96m"; // bright cyan: most recent move
             }
         }
@@ -60,28 +68,44 @@ impl Watch {
 
     /// Redraw the whole frame. Cursor is sent home first so nothing flickers;
     /// `\x1b[K`/`\x1b[J` erase stale pixels on shorter frames.
-    fn render(&mut self, cells: &[u8; 81], footer: &str) {
-        let mut s = String::with_capacity(8192);
+    fn render(&mut self, cells: &[u8], footer: &str) {
+        let (w, h) = (self.grid.top.w, self.grid.top.h);
+        let mut s = String::with_capacity(16384);
         let _ = writeln!(
             s,
             "\x1b[H\x1b[1;35msudoku\x1b[0m — watch mode   events: {}  \x1b[K\n",
             self.events
         );
-        for r in 0..9 {
-            if r == 3 || r == 6 {
-                let _ = writeln!(s, "------+-------+------\x1b[K");
-            }
-            for c in 0..9 {
-                if c == 3 || c == 6 {
-                    let _ = write!(s, "| ");
+        for r in 0..h {
+            // Horizontal box separator above this row?
+            if self.sep_row[r] {
+                for c in 0..w {
+                    let above = r > 0 && self.grid.top.index[r - 1][c] != usize::MAX;
+                    let below = self.grid.top.index[r][c] != usize::MAX;
+                    if above || below {
+                        let cross = self.pipe_col[c];
+                        let _ = write!(s, "{}", if cross { '+' } else { '-' });
+                    } else {
+                        let _ = write!(s, " ");
+                    }
                 }
-                let idx = r * 9 + c;
+                let _ = writeln!(s, "\x1b[K");
+            }
+            for c in 0..w {
+                let idx = self.grid.top.index[r][c];
+                // Vertical box separators draw through every row of the
+                // column (also where the column is a hole) so rows align.
+                if self.pipe_col[c] {
+                    let has_side = (c > 0 && self.grid.top.index[r][c - 1] != usize::MAX)
+                        || idx != usize::MAX;
+                    let _ = write!(s, "{}", if has_side { '|' } else { ' ' });
+                }
+                if idx == usize::MAX {
+                    let _ = write!(s, "  ");
+                    continue;
+                }
                 let d = cells[idx];
-                let ch = if d == 0 {
-                    '.'
-                } else {
-                    char::from_digit(d as u32, 10).unwrap()
-                };
+                let ch = cell_char(d);
                 let _ = write!(s, "{}{ch}\x1b[0m ", self.style(idx, d));
             }
             let _ = writeln!(s, "\x1b[K");
@@ -95,19 +119,19 @@ impl Watch {
         let mut lock = stdout.lock();
         let _ = lock.write_all(s.as_bytes()); // ignore broken pipes
         let _ = lock.flush();
-        self.shown.copy_from_slice(cells);
+        self.shown = cells.to_vec();
     }
 
     /// Final frame: static colors only (no "fresh move" highlighting).
-    fn render_final(&mut self, cells: &[u8; 81], footer: &str) {
+    fn render_final(&mut self, cells: &[u8], footer: &str) {
         self.last = None;
-        self.shown.copy_from_slice(cells);
+        self.shown = cells.to_vec();
         self.render(cells, footer);
     }
 }
 
 impl StepLogger for Watch {
-    fn step(&mut self, cells: &[u8; 81], info: Option<StepInfo>) {
+    fn step(&mut self, cells: &[u8], info: Option<StepInfo>) {
         self.events += 1;
         if self.events % self.step_every != 0 {
             return; // skip instantly; pacing comes from rendered frames
@@ -126,8 +150,8 @@ impl StepLogger for Watch {
 }
 
 /// Watch a single puzzle solve, live.
-pub fn watch(puzzle: &str, fps: u32, algorithm: Algorithm) -> Exit {
-    let grid = match Grid::parse(puzzle) {
+pub fn watch(puzzle: &str, fps: u32, algorithm: Algorithm, shape: Option<Shape>) -> Exit {
+    let grid = match Grid::parse_shape(puzzle, shape) {
         Ok(g) => g,
         Err(e) => {
             eprintln!("error: bad puzzle: {e}");
@@ -144,22 +168,24 @@ pub fn watch(puzzle: &str, fps: u32, algorithm: Algorithm) -> Exit {
     let target = (n / fps).clamp(1.0, 10.0);
     let step_every = ((n / (target * fps)).ceil() as u64).max(1);
 
-    let clues = *grid.cells();
     let mut w = Watch {
-        clues,
-        shown: [0; 81],
+        grid: grid.clone(),
+        clues: grid.cells().to_vec(),
+        shown: vec![0; grid.top.cells],
         last: None,
         events: 0,
         step_every,
         interval: Duration::from_secs_f64(1.0 / fps),
         next_frame: None,
+        pipe_col: grid.top.pipe_columns(),
+        sep_row: grid.top.separator_rows(),
     };
 
     let mut stdout = io::stdout();
     let _ = stdout.write_all(b"\x1b[2J"); // clear once
     let _ = stdout.flush();
 
-    let clue_count = clues.iter().filter(|&&d| d != 0).count();
+    let clue_count = w.clues.iter().filter(|&&d| d != 0).count();
     let start_footer = format!(
         "imported puzzle — {clue_count} clues; animating ~{n:.0} solver steps at {fps:.0} fps"
     );

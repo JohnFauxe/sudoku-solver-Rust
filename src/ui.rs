@@ -21,12 +21,12 @@ const PAGE: &str = include_str!("ui_page.html");
 const MAX_EVENTS: usize = 400_000;
 
 struct EventCollector {
-    events: Vec<String>, // {"s":"<81>","i":<idx|null>,"d":<digit|null>,"p":"n|h|g|null"}
+    events: Vec<String>, // {"s":"<cells>","i":<idx|null>,"d":<digit|null>,"p":"n|h|g|d|b|u|null"}
     truncated: bool,
 }
 
 impl StepLogger for EventCollector {
-    fn step(&mut self, cells: &[u8; 81], info: Option<StepInfo>) {
+    fn step(&mut self, cells: &[u8], info: Option<StepInfo>) {
         if self.events.len() >= MAX_EVENTS {
             self.truncated = true;
             return;
@@ -134,9 +134,8 @@ fn solve_api(body: &str) -> (&'static str, &'static str, String) {
     };
 
     let Ok(grid) = Grid::parse(&puzzle) else {
-        return error_response("puzzle must have exactly 81 cells (1-9 plus 0 or . for empty) and no duplicate clues");
+        return error_response("bad puzzle: use 81 chars (classic), 21 lines of 21 or a 441-char line (samurai); no duplicate clues");
     };
-
     let start = Instant::now();
     let mut collector = EventCollector { events: Vec::new(), truncated: false };
     let outcome = solve_with(&grid, cfg, Some(&mut collector));
@@ -146,6 +145,10 @@ fn solve_api(body: &str) -> (&'static str, &'static str, String) {
         .iter()
         .map(|&d| if d == 0 { '.' } else { char::from_digit(d as u32, 10).unwrap() })
         .collect();
+
+    // Layout metadata so the page can draw any topology: display size and,
+    // per cell (in solver cell order), its display position and borders.
+    let layout_json = layout_to_json(&grid);
 
     // An initial "start" event so the replay always begins at the imported
     // puzzle; then all solver placements in order.
@@ -191,13 +194,14 @@ fn solve_api(body: &str) -> (&'static str, &'static str, String) {
 
     let json = format!(
         concat!(
-            r#"{{"ok":true,"outcome":"{}","incomplete":{},"puzzle":"{}","#,
+            r#"{{"ok":true,"outcome":"{}","incomplete":{},"puzzle":"{}","layout":{},"#,
             r#""stats":{{"naked":{},"hidden":{},"guesses":{},"dead":{}}},"#,
             r#""solutions":{},"events":[{}],"truncated":{},"elapsedMs":{}}}"#
         ),
         outcome_json,
         incomplete,
         json_escape(&clue_str),
+        layout_json,
         stats_tuple.0,
         stats_tuple.1,
         stats_tuple.2,
@@ -208,6 +212,29 @@ fn solve_api(body: &str) -> (&'static str, &'static str, String) {
         elapsed,
     );
     ("200 OK", "application/json", json)
+}
+
+/// Serialize a topology for the page: display size plus one entry per cell
+/// (solver cell order) with its display position and box borders.
+fn layout_to_json(grid: &Grid) -> String {
+    let top = &grid.top;
+    let mut cells = String::with_capacity(top.cells * 48);
+    for (idx, &(r, c)) in top.positions.iter().enumerate() {
+        if idx > 0 {
+            cells.push(',');
+        }
+        cells.push_str(&format!(
+            "{{\"r\":{},\"c\":{},\"bl\":{},\"bt\":{}}}",
+            r,
+            c,
+            top.left_border[idx],
+            top.top_border[idx]
+        ));
+    }
+    format!(
+        r#"{{"w":{},"h":{},"cells":[{}]}}"#,
+        top.w, top.h, cells
+    )
 }
 
 fn write_response(stream: &mut TcpStream, code: &str, ctype: &str, body: &str) {

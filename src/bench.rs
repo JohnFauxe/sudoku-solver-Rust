@@ -68,7 +68,7 @@ fn measure(grid: &Grid, name: &'static str, algorithm: Algorithm, min_batch: Dur
 pub fn bench_engines(grid: &Grid, min_batch: Duration, max_iters: u64, watchdog: Duration) -> Vec<EngineBench> {
     let mut results = Vec::new();
     for (name, algorithm) in engines() {
-        let grid_copy = *grid;
+        let grid_copy = grid.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         let t0 = Instant::now();
         thread::spawn(move || {

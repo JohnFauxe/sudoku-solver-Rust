@@ -10,10 +10,11 @@ mod dlx;
 mod grid;
 mod naive;
 mod solver;
+mod topo;
 mod tui;
 mod ui;
 
-use grid::Grid;
+use grid::{Grid, Shape};
 use solver::{Algorithm, SolveConfig, SolveOutcome, SolveStats};
 
 const USAGE: &str = "\
@@ -24,11 +25,17 @@ USAGE:
                             0 or . for empty cells, e.g.
                             530070000600195000098000060800060003400803001700020006060000280000419005000080079
                             Drawn grids (spaces and | - + separators) are accepted too.
+                            Samurai: 21 lines of 21 characters (- or space = hole),
+                            a 441-char single line, or --samurai to force the shape.
   sudoku --dlx <PUZZLE>     Solve with Knuth's dancing links (Algorithm X)
   sudoku --naive <PUZZLE>   Solve with plain cell-by-cell backtracking
   sudoku --bench <PUZZLE>   Race all engines (mrv, dlx, naive) on one
                             puzzle; prints per-solve timings and a
                             correctness cross-check.
+  sudoku --max=<N> <PUZZLE> Stop after N solutions (default 2 proves
+                            uniqueness; --max=1 just finds one solution).
+  sudoku --samurai <PUZZLE> Force the Samurai shape (auto-detected from
+                            21x21 / 441-char input otherwise).
   sudoku -a --algorithm=mrv|dlx|naive   Pick the engine (default mrv).
   sudoku -w --watch <PUZZLE>  Live view: shows the imported puzzle, then
                               animates the grid as the solver fills it in.
@@ -102,6 +109,8 @@ fn run(args: &[String]) -> Exit {
     let mut port: u16 = 8173;
     let mut open_browser = true;
     let mut algorithm = Algorithm::Propagation;
+    let mut shape: Option<Shape> = None;
+    let mut max_solutions: usize = 2;
     let mut bench = false;
 
     let mut i = 0;
@@ -117,6 +126,27 @@ fn run(args: &[String]) -> Exit {
             "--no-open" => open_browser = false,
             "--dlx" => algorithm = Algorithm::DancingLinks,
             "--naive" | "--brute" => algorithm = Algorithm::NaiveBacktracking,
+            "--samurai" => shape = Some(Shape::Samurai),
+            "--classic" => shape = Some(Shape::Classic),
+            "--max" => match args.get(i + 1).and_then(|v| v.parse::<usize>().ok()) {
+                Some(v) if v >= 1 => {
+                    max_solutions = v;
+                    i += 1;
+                }
+                _ => {
+                    eprintln!("error: --max needs a number >= 1");
+                    eprint!("{USAGE}");
+                    return USAGE_ERROR;
+                }
+            },
+            v if v.starts_with("--max=") => match v.trim_start_matches("--max=").parse::<usize>() {
+                Ok(v) if v >= 1 => max_solutions = v,
+                _ => {
+                    eprintln!("error: bad value for --max");
+                    eprint!("{USAGE}");
+                    return USAGE_ERROR;
+                }
+            },
             "--bench" => bench = true,
             "-a" | "--algorithm" => match args.get(i + 1).map(|s| s.as_str()) {
                 Some("mrv") => {
@@ -230,7 +260,7 @@ fn run(args: &[String]) -> Exit {
             eprintln!("error: --bench needs exactly one puzzle argument (and nothing else)");
             return USAGE_ERROR;
         }
-        let grid = match Grid::parse(puzzle.as_deref().unwrap_or("")) {
+        let grid = match Grid::parse_shape(puzzle.as_deref().unwrap_or(""), shape) {
             Ok(g) => g,
             Err(e) => {
                 eprintln!("error: bad puzzle: {e}");
@@ -241,14 +271,14 @@ fn run(args: &[String]) -> Exit {
     }
 
     match (puzzle, file) {
-        (Some(p), None) if watch => tui::watch(&p, fps, algorithm),
-        (Some(p), None) => solve_one(&p, algorithm),
+        (Some(p), None) if watch => tui::watch(&p, fps, algorithm, shape),
+        (Some(p), None) => solve_one(&p, algorithm, shape, max_solutions),
         (None, Some(f)) => {
             if watch {
                 eprintln!("error: --watch animates a single puzzle argument, not a file");
                 return USAGE_ERROR;
             }
-            solve_file(&f, algorithm)
+            solve_file(&f, algorithm, shape, max_solutions)
         }
         (None, None) => {
             eprintln!("error: expected a puzzle or -f <PATH>");
@@ -263,8 +293,8 @@ fn run(args: &[String]) -> Exit {
     }
 }
 
-fn solve_one(puzzle: &str, algorithm: Algorithm) -> Exit {
-    let grid = match Grid::parse(puzzle) {
+fn solve_one(puzzle: &str, algorithm: Algorithm, shape: Option<Shape>, max_solutions: usize) -> Exit {
+    let grid = match Grid::parse_shape(puzzle, shape) {
         Ok(g) => g,
         Err(e) => {
             eprintln!("error: bad puzzle: {e}");
@@ -273,10 +303,10 @@ fn solve_one(puzzle: &str, algorithm: Algorithm) -> Exit {
     };
 
     out(format_args!("Puzzle:\n{grid}"));
-    report_solve(&grid, algorithm)
+    report_solve(&grid, algorithm, max_solutions)
 }
 
-fn solve_file(path: &str, algorithm: Algorithm) -> Exit {
+fn solve_file(path: &str, algorithm: Algorithm, shape: Option<Shape>, max_solutions: usize) -> Exit {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
@@ -291,10 +321,10 @@ fn solve_file(path: &str, algorithm: Algorithm) -> Exit {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        match Grid::parse(line) {
+        match Grid::parse_shape(line, shape) {
             Ok(grid) => {
                 out(format_args!("\nline {}: {line}\n{grid}", n + 1));
-                worst = worst.max(report_solve(&grid, algorithm));
+                worst = worst.max(report_solve(&grid, algorithm, max_solutions));
             }
             Err(e) => {
                 out(format_args!("\nline {}: {line}\n  ERROR: {e}", n + 1));
@@ -306,8 +336,8 @@ fn solve_file(path: &str, algorithm: Algorithm) -> Exit {
 }
 
 /// Solve and print the result; returns the matching exit code.
-fn report_solve(grid: &Grid, algorithm: Algorithm) -> Exit {
-    let cfg = SolveConfig::with_max(2).with_algorithm(algorithm);
+fn report_solve(grid: &Grid, algorithm: Algorithm, max_solutions: usize) -> Exit {
+    let cfg = SolveConfig::with_max(max_solutions).with_algorithm(algorithm);
     match solver::solve_with(grid, cfg, None) {
         SolveOutcome::Unique { solution, stats } => {
             let SolveStats { naked_singles, hidden_singles, guesses, backtracks } = stats;

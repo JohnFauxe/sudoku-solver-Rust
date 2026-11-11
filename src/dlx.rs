@@ -1,42 +1,56 @@
-//! Knuth's Algorithm X with Dancing Links (DLX): Sudoku as exact cover.
+//! Knuth's Algorithm X with Dancing Links (DLX), generalized over any
+//! topology.
 //!
-//! Columns = 324 constraints, each of which must be satisfied exactly once:
-//!   0..81     cell (r, c)   — every cell holds exactly one digit
-//!   81..162   row           — every digit appears exactly once per row
-//!   162..243  col           — ... per column
-//!   243..324  box           — ... per box
+//! Exact-cover columns, each of which must be satisfied exactly once:
+//!   1..=cells        every cell holds exactly one digit
+//!   cells+1 ..       for every unit and digit: the unit contains digit d
 //!
-//! Rows = 729 placement possibilities (r, c, d). A given clue prunes its
-//! cell to a single row, which is pre-selected (its columns covered) before
-//! the search starts.
+//! Rows = one per (cell, digit) possibility, pruned by the puzzle's clues
+//! (a given cell keeps only its own digit's row, which is pre-selected —
+//! its columns covered — before the search starts).
 //!
 //! Search order is Knuth's S heuristic: always branch on the column with
 //! the fewest remaining rows. Every row selection/deselection is reported
-//! through the same [`StepLogger`] hook the other engine uses, so all UIs
+//! through the same [`StepLogger`] hook the other engines use, so all UIs
 //! animate DLX solving too, including its backtracking.
 
-use crate::grid::{box_of, Grid};
-use crate::solver::{NopLogger, Placer, SolveConfig, SolveOutcome, SolveStats, StepInfo, StepLogger};
-
-pub const CONSTRAINTS: usize = 324;
-pub const PLACEMENTS: usize = 729;
+use crate::grid::Grid;
+use crate::solver::{
+    NopLogger, Placer, SolveConfig, SolveOutcome, SolveStats, StepInfo, StepLogger,
+};
+use crate::topo::Topology;
 
 struct Dlx {
-    // Dancing-links node arrays; index 0 is the root, 1..=324 are headers.
+    // Dancing-links node arrays; index 0 is the root, 1.. are headers.
     l: Vec<usize>,
     r: Vec<usize>,
     u: Vec<usize>,
     d: Vec<usize>,
     col: Vec<usize>,    // column header of a node (== itself for headers)
-    row_of: Vec<usize>, // placement id (r*81 + c*9 + d-1), 0 for headers/root
-    sizes: [usize; CONSTRAINTS + 1],
+    row_of: Vec<usize>, // placement id (cell*9 + d-1), usize::MAX for headers
+    sizes: [u32; 1 << 12],
     // placement id -> its node in the cell-constraint column
-    cell_node: [usize; PLACEMENTS],
-    cells: [u8; 81],
+    cell_node: Vec<usize>,
+    cells: Vec<u8>,
+    top: Topology,
+}
+
+/// Column header (array index) of the cell constraint for `cell`.
+fn cell_header(cell: usize) -> usize {
+    1 + cell
+}
+
+/// Column header (array index) of the "unit u contains digit d" constraint.
+fn unit_header(top: &Topology, unit: usize, d: u8) -> usize {
+    1 + top.cells + unit * 9 + (d as usize - 1)
 }
 
 impl Dlx {
     fn new(grid: &Grid) -> Dlx {
+        let top = grid.top.clone();
+        // Number of column headers (excluding the root): one per cell,
+        // plus one per (unit, digit) pair.
+        let headers = top.cells + top.units * 9;
         let mut s = Dlx {
             l: Vec::new(),
             r: Vec::new(),
@@ -44,35 +58,32 @@ impl Dlx {
             d: Vec::new(),
             col: Vec::new(),
             row_of: Vec::new(),
-            sizes: [0; CONSTRAINTS + 1],
-            cell_node: [0; PLACEMENTS],
-            cells: [0; 81],
+            sizes: [0; 1 << 12],
+            cell_node: vec![0; top.cells * 9],
+            cells: grid.cells().to_vec(),
+            top: top.clone(),
         };
+        assert!(headers < s.sizes.len(), "topology too large for DLX");
         // Root.
-        s.push_node(0, 0);
-        // Column headers 1..=CONSTRAINTS, linked in a circle with the root.
-        for ci in 1..=CONSTRAINTS {
+        s.push_node(0, usize::MAX);
+        // Column headers, linked in a circle with the root.
+        for ci in 1..=headers {
             s.add_header(ci);
         }
         // Placements. A clue cell keeps only its own digit's row.
-        for r in 0..9 {
-            for c in 0..9 {
-                let clue = grid.get(r, c);
-                for d in 1u8..=9 {
-                    if clue == 0 || d == clue {
-                        s.add_row(r, c, d);
-                    }
+        for cell in 0..top.cells {
+            let clue = grid.cells()[cell];
+            for d in 1u8..=9 {
+                if clue == 0 || d == clue {
+                    s.add_row(&top, cell, d);
                 }
             }
         }
         // Pre-select clue rows.
-        for r in 0..9 {
-            for c in 0..9 {
-                let d = grid.get(r, c);
-                if d != 0 {
-                    s.cover_clue(r, c, d);
-                    s.cells[r * 9 + c] = d;
-                }
+        for cell in 0..top.cells {
+            let d = grid.cells()[cell];
+            if d != 0 {
+                s.cover_clue(cell, d);
             }
         }
         s
@@ -91,29 +102,22 @@ impl Dlx {
 
     fn add_header(&mut self, ci: usize) {
         let prev = self.l[0];
-        let n = self.push_node(ci, 0);
+        let n = self.push_node(ci, usize::MAX);
         self.r[prev] = n;
         self.l[n] = prev;
         self.r[n] = 0;
         self.l[0] = n;
         self.u[n] = n;
         self.d[n] = n;
+        self.sizes[ci] = 0;
     }
 
-    fn placement_id(r: usize, c: usize, d: u8) -> usize {
-        r * 81 + c * 9 + d as usize - 1
-    }
-
-    fn add_row(&mut self, r: usize, c: usize, d: u8) {
-        let b = box_of(r, c);
-        let dd = d as usize - 1;
-        let cols = [
-            1 + 9 * r + c,           // cell (r, c)
-            82 + 9 * r + dd,         // row/digit
-            163 + 9 * c + dd,        // column/digit
-            244 + 9 * b + dd,        // box/digit
-        ];
-        let row = Self::placement_id(r, c, d);
+    fn add_row(&mut self, top: &Topology, cell: usize, d: u8) {
+        let mut cols = vec![cell_header(cell)];
+        for &unit in &top.cell_units[cell] {
+            cols.push(unit_header(top, unit, d));
+        }
+        let row = cell * 9 + d as usize - 1;
         let mut first = usize::MAX;
         let mut prev = usize::MAX;
         for &ci in &cols {
@@ -179,8 +183,8 @@ impl Dlx {
 
     /// Select a clue's row before searching; no event is emitted since the
     /// UIs already display the imported puzzle.
-    fn cover_clue(&mut self, r: usize, c: usize, d: u8) {
-        let start = self.cell_node[Self::placement_id(r, c, d)];
+    fn cover_clue(&mut self, cell: usize, d: u8) {
+        let start = self.cell_node[cell * 9 + d as usize - 1];
         self.cover(self.col[start]);
         let mut j = self.r[start];
         while j != start {
@@ -189,7 +193,7 @@ impl Dlx {
         }
     }
 
-    /// Recurese through Algorithm X. `solutions` collects up to
+    /// Recurse through Algorithm X. `solutions` collects up to
     /// `cfg.max_solutions` completed grids.
     fn search(
         &mut self,
@@ -203,7 +207,7 @@ impl Dlx {
         }
         if self.r[0] == 0 {
             // All constraints satisfied.
-            solutions.push(Grid::from_cells(self.cells));
+            solutions.push(Grid::from_cells(self.top.clone(), self.cells.clone()));
             return;
         }
         // S heuristic: branch on the smallest active column.
@@ -224,12 +228,12 @@ impl Dlx {
         let mut i = self.d[ci];
         while i != ci && solutions.len() < cfg.max_solutions {
             // Try row i: assign its cell, hide all conflicting rows.
-            let row = self.row_of[i];
-            let (rr, cc, dd) = Self::decode(row);
-            let cell = rr * 9 + cc;
-            self.cells[cell] = dd;
+            let cell = self.row_of[i] / 9;
+            let num = self.row_of[i] % 9;
+            let dgt = num as u8 + 1;
+            self.cells[cell] = dgt;
             stats.guesses += 1;
-            vis.step(&self.cells, Some(StepInfo { idx: cell, digit: dd, placer: Placer::Dlx }));
+            vis.step(&self.cells, Some(StepInfo { idx: cell, digit: dgt, placer: Placer::Dlx }));
             let mut j = self.r[i];
             while j != i {
                 self.cover(self.col[j]);
@@ -252,14 +256,6 @@ impl Dlx {
         if solutions.len() < cfg.max_solutions {
             self.uncover(ci);
         }
-    }
-
-    fn decode(row: usize) -> (usize, usize, u8) {
-        let r = row / 81;
-        let rem = row % 81;
-        let c = rem / 9;
-        let d = (rem % 9) as u8 + 1;
-        (r, c, d)
     }
 }
 
@@ -291,6 +287,7 @@ mod tests {
     use super::*;
     use crate::grid::Grid;
     use crate::solver::{Algorithm, Placer};
+    use crate::topo::{Shape, Topology};
 
     const WIKIPEDIA: &str = concat!(
         "530070000", "600195000", "098000060",
@@ -333,7 +330,7 @@ mod tests {
         match solve_dlx(&g, dlx_cfg(2), None) {
             SolveOutcome::Unique { solution, .. } => {
                 assert!(solution.is_complete_and_valid());
-                assert_eq!(solution.get(0, 0), 8); // clue preserved
+                assert!(solution.cells()[0] == 8); // clue preserved
             }
             other => panic!("expected unique solution, got {other:?}"),
         }
@@ -354,6 +351,7 @@ mod tests {
 
     #[test]
     fn detects_multiple_solutions() {
+        // A single clue leaves the grid massively under-constrained.
         let puzzle = "5".to_string() + &".".repeat(80);
         let g = Grid::parse(&puzzle).unwrap();
         match solve_dlx(&g, dlx_cfg(2), None) {
@@ -372,28 +370,26 @@ mod tests {
         struct L {
             events: u64,
             undos: u64,
-            last_cells: [u8; 81],
+            last_cells: Vec<u8>,
         }
         impl StepLogger for L {
-            fn step(&mut self, cells: &[u8; 81], info: Option<StepInfo>) {
+            fn step(&mut self, cells: &[u8], info: Option<StepInfo>) {
                 self.events += 1;
                 if matches!(info, Some(StepInfo { placer: Placer::Undo, .. })) {
                     self.undos += 1;
                 }
-                self.last_cells = *cells;
+                self.last_cells = cells.to_vec();
             }
         }
         // An under-constrained puzzle makes DLX backtrack, so undo events
         // must appear.
         let puzzle = "5".to_string() + &".".repeat(80);
         let g = Grid::parse(&puzzle).unwrap();
-        let mut l = L { events: 0, undos: 0, last_cells: [0; 81] };
+        let mut l = L { events: 0, undos: 0, last_cells: Vec::new() };
         match solve_dlx(&g, dlx_cfg(2), Some(&mut l)) {
             SolveOutcome::Multiple { .. } => {
                 assert!(l.events > 0);
                 assert!(l.undos > 0, "expected backtrack (undo) events");
-                // With max > 1 the final selection of a found solution may be
-                // left assigned, so don't require an all-zero last state.
             }
             other => panic!("expected multiple solutions, got {other:?}"),
         }
@@ -404,16 +400,57 @@ mod tests {
         // Cell clues must survive: the solution contains every clue as-is.
         let g = Grid::parse(WIKIPEDIA).unwrap();
         if let SolveOutcome::Unique { solution, .. } = solve_dlx(&g, dlx_cfg(1), None) {
-            for r in 0..9 {
-                for c in 0..9 {
-                    let clue = g.get(r, c);
-                    if clue != 0 {
-                        assert_eq!(solution.get(r, c), clue, "clue at ({r},{c}) changed");
-                    }
+            for i in 0..81 {
+                let clue = g.cells()[i];
+                if clue != 0 {
+                    assert_eq!(solution.cells()[i], clue, "clue cell {i} changed");
                 }
             }
         } else {
             panic!("expected unique solution");
         }
+    }
+
+    // ----- Samurai -----
+
+    fn samurai_solution() -> Vec<u8> {
+        let empty = Grid::new(Topology::new(Shape::Samurai));
+        match solve_dlx(&empty, SolveConfig::with_max(1), None) {
+            SolveOutcome::Unique { solution, .. } => solution.cells().to_vec(),
+            other => panic!("empty samurai must be solvable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn solves_samurai() {
+        let sol = samurai_solution();
+        let top = Topology::new(Shape::Samurai);
+        // Keep every third cell as a clue; DLX must complete it.
+        let puzzle: Vec<u8> = sol
+            .iter()
+            .enumerate()
+            .map(|(i, &d)| if i % 3 == 0 { d } else { 0 })
+            .collect();
+        let g = Grid::from_cells(top, puzzle.clone());
+        match solve_dlx(&g, dlx_cfg(1), None) {
+            SolveOutcome::Unique { solution, .. } => {
+                assert!(solution.is_complete_and_valid());
+                for (i, &p) in puzzle.iter().enumerate() {
+                    if p != 0 {
+                        assert_eq!(solution.cells()[i], p);
+                    }
+                }
+            }
+            other => panic!("expected samurai solution, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_samurai_has_many_solutions() {
+        let empty = Grid::new(Topology::new(Shape::Samurai));
+        assert!(matches!(
+            solve_dlx(&empty, dlx_cfg(2), None),
+            SolveOutcome::Multiple { .. }
+        ));
     }
 }

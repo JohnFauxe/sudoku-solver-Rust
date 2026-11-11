@@ -39,8 +39,13 @@ cargo build --release
 # Benchmark: race all engines on one puzzle, print per-solve timings
 ./target/release/sudoku --bench <PUZZLE>
 
-# Watch mode: live view of the solver populating the grid
-# (clues stay bold white; fresh moves in green, latest in cyan,
+# Samurai Sudoku: paste a 21x21 character grid (one puzzle per 21 lines,
+# '-' or space = hole between the five overlapping grids), or a 441-char
+# single line. The shape is auto-detected; --samurai forces it.
+./target/release/sudoku --samurai -f samurai.txt
+./target/release/sudoku --dlx "$(cat samurai441.txt)"
+
+# Watch mode: live view of the solver populating the grid# (clues stay bold white; fresh moves in green, latest in cyan,
 #  backtracked cells flash gray; animation stays within ~1-10 s)
 ./target/release/sudoku -w --fps=30 <PUZZLE>
 
@@ -54,6 +59,17 @@ cargo build --release
 
 ./target/release/sudoku --help
 ```
+
+### Shapes: classic and Samurai
+
+Puzzle shapes are described by a `Topology` (`src/topo.rs`). A Samurai
+puzzle is five overlapping 9x9 grids set in a cross on a 21x21 display
+(369 cells, 135 constraint units); a cell in an overlapping box belongs
+to six units — two rows, two columns, two boxes — and a placement must
+satisfy all of them, which is exactly the Samurai consistency rule.
+All three engines and both UIs work on any topology without special
+cases. Samurai input: 21 lines of 21 characters (`-`/space = hole) or a
+441-character single line; `--samurai` forces the shape.
 
 ### The browser window (`--ui`)
 
@@ -92,8 +108,10 @@ correctness cross-check between engines.
 
 ## Layout
 
-- `src/grid.rs` — grid type, parsing, clue validation (duplicates in
-  rows, columns and boxes), pretty printing
+- `src/topo.rs` — topologies: cell/unit geometry for Classic and Samurai
+  (five overlapping grids, shared-box cells in six units)
+- `src/grid.rs` — `Grid` on a topology: shape-detecting parser, clue
+  validation, display rendering
 - `src/solver.rs` — propagation + MRV engine, `SolveConfig`/`Algorithm`,
   step-event logging, unit tests
 - `src/dlx.rs` — dancing links engine: exact-cover model, cover/uncover,
