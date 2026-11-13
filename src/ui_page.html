@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>sudoku — solver UI</title>
+<title>Sudoku Solver</title>
 <style>
 :root { --cell: 44px; --grid-line: #2a3140; --grid-strong: #4a5468; }
 * { box-sizing: border-box; }
@@ -49,7 +49,7 @@ input[type=checkbox] { accent-color: #7d6bff; }
 </head>
 <body>
 <header>
-  <h1>sudoku — solver UI</h1>
+  <h1>Sudoku Solver</h1>
   <span class="url"></span>
 </header>
 <main>
@@ -665,7 +665,7 @@ function b64of(bytes) {
 }
 
 // Server-side transcription: hand the canvas pixels to the backend, which
-// runs the same OCR engine as `sudoku --transcribe` (glyph clustering plus
+// runs the same OCR engine as `sudoku-solver --transcribe` (glyph clustering plus
 // font-template matching with a digit<->cluster bijection). Returns a
 // result shaped like the in-page OCR, or null on any failure (the caller
 // falls back to the in-page engine).

@@ -73,7 +73,7 @@ impl Watch {
         let mut s = String::with_capacity(16384);
         let _ = writeln!(
             s,
-            "\x1b[H\x1b[1;35msudoku\x1b[0m — watch mode   events: {}  \x1b[K\n",
+            "\x1b[H\x1b[1;35mSudoku Solver\x1b[0m — watch mode   events: {}  \x1b[K\n",
             self.events
         );
         for r in 0..h {

@@ -68,7 +68,7 @@ pub fn serve(port: u16, open_browser: bool) -> ! {
     };
     let addr = listener.local_addr().expect("addr");
     let url = format!("http://{addr}");
-    println!("sudoku UI listening on {url}  (Ctrl-C to stop)");
+    println!("Sudoku Solver UI listening on {url}  (Ctrl-C to stop)");
     if open_browser {
         println!("  opening your browser… (use --no-open to skip)");
         // Open in a helper thread: the opener (e.g. xdg-open handing the URL

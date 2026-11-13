@@ -1,4 +1,4 @@
-# sudoku
+# Sudoku Solver
 
 A fast Sudoku solver in Rust with no dependencies.
 
@@ -16,10 +16,10 @@ cargo build --release
 
 ```sh
 # Solve one puzzle: 81 characters, 1-9 = clues, 0 or . = empty
-./target/release/sudoku 530070000600195000098000060800060003400803001700020006060000280000419005000080079
+./target/release/sudoku-solver 530070000600195000098000060800060003400803001700020006060000280000419005000080079
 
 # Drawn grids (spaces and | - + ) are accepted as input too
-./target/release/sudoku "5 3 . | . 7 . | . . .
+./target/release/sudoku-solver "5 3 . | . 7 . | . . .
 6 . . | 1 9 5 | . . .
 . 9 8 | . . . | . 6 .
 ------+-------+------
@@ -32,40 +32,40 @@ cargo build --release
 . . . | . 8 . | . 7 9"
 
 # Choose the solving engine
-./target/release/sudoku --dlx <PUZZLE>       # Knuth's dancing links (Algorithm X)
-./target/release/sudoku --naive <PUZZLE>     # plain cell-by-cell backtracking
-./target/release/sudoku --algorithm=mrv <PUZZLE>   # default: propagation + MRV
+./target/release/sudoku-solver --dlx <PUZZLE>       # Knuth's dancing links (Algorithm X)
+./target/release/sudoku-solver --naive <PUZZLE>     # plain cell-by-cell backtracking
+./target/release/sudoku-solver --algorithm=mrv <PUZZLE>   # default: propagation + MRV
 
 # Benchmark: race all engines on one puzzle, print per-solve timings
-./target/release/sudoku --bench <PUZZLE>
+./target/release/sudoku-solver --bench <PUZZLE>
 
 # Samurai Sudoku: paste a 21x21 character grid (one puzzle per 21 lines,
 # '-' or space = hole between the five overlapping grids), or a 441-char
 # single line. The shape is auto-detected; --samurai forces it.
-./target/release/sudoku --samurai -f samurai.txt
-./target/release/sudoku --dlx "$(cat samurai441.txt)"
+./target/release/sudoku-solver --samurai -f samurai.txt
+./target/release/sudoku-solver --dlx "$(cat samurai441.txt)"
 
 # Transcribe puzzle image(s) into text — classic 9x9 (81 characters) or
 # samurai (441-char single line); the shape is auto-detected from the grid
 # (PNG; --pretty also prints a readable grid view; consistency problems
 # in the reading become warnings on stderr)
-./target/release/sudoku --transcribe puzzle1.png puzzle2.png
-./target/release/sudoku --transcribe --pretty puzzle1.png
-./target/release/sudoku "$(./target/release/sudoku --transcribe puzzle1.png)"   # transcribe + solve
+./target/release/sudoku-solver --transcribe puzzle1.png puzzle2.png
+./target/release/sudoku-solver --transcribe --pretty puzzle1.png
+./target/release/sudoku-solver "$(./target/release/sudoku-solver --transcribe puzzle1.png)"   # transcribe + solve
 
 # Watch mode: live view of the solver populating the grid# (clues stay bold white; fresh moves in green, latest in cyan,
 #  backtracked cells flash gray; animation stays within ~1-10 s)
-./target/release/sudoku -w --fps=30 <PUZZLE>
+./target/release/sudoku-solver -w --fps=30 <PUZZLE>
 
 # Browser UI: import puzzles, configure the solver, watch it solve.
 # Opens your default browser at http://127.0.0.1:8173 (Ctrl-C stops it).
-./target/release/sudoku --ui
-./target/release/sudoku --ui --port=9000 --no-open
+./target/release/sudoku-solver --ui
+./target/release/sudoku-solver --ui --port=9000 --no-open
 
 # Solve every puzzle in a file, one per line (# comments allowed)
-./target/release/sudoku -f puzzles.txt
+./target/release/sudoku-solver -f puzzles.txt
 
-./target/release/sudoku --help
+./target/release/sudoku-solver --help
 ```
 
 ### Shapes: classic and Samurai

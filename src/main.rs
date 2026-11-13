@@ -20,46 +20,48 @@ use grid::{Grid, Shape};
 use solver::{Algorithm, SolveConfig, SolveOutcome, SolveStats};
 
 const USAGE: &str = "\
- sudoku — a Sudoku solver (constraint propagation + MRV backtracking)
+ Sudoku Solver (constraint propagation + MRV backtracking)
 
 USAGE:
-  sudoku <PUZZLE>           Solve one puzzle: 81 characters, digits 1-9 with
-                            0 or . for empty cells, e.g.
-                            530070000600195000098000060800060003400803001700020006060000280000419005000080079
-                            Drawn grids (spaces and | - + separators) are accepted too.
-                            Samurai: 21 lines of 21 characters (- or space = hole),
-                            a 441-char single line, or --samurai to force the shape.
-  sudoku --dlx <PUZZLE>     Solve with Knuth's dancing links (Algorithm X)
-  sudoku --naive <PUZZLE>   Solve with plain cell-by-cell backtracking
-  sudoku --bench <PUZZLE>   Race all engines (mrv, dlx, naive) on one
-                            puzzle; prints per-solve timings and a
-                            correctness cross-check.
-  sudoku --max=<N> <PUZZLE> Stop after N solutions (default 2 proves
-                            uniqueness; --max=1 just finds one solution).
-  sudoku --samurai <PUZZLE> Force the Samurai shape (auto-detected from
-                            21x21 / 441-char input otherwise).
-  sudoku -a --algorithm=mrv|dlx|naive   Pick the engine (default mrv).
-  sudoku -w --watch <PUZZLE>  Live view: shows the imported puzzle, then
-                              animates the grid as the solver fills it in.
-  sudoku --fps=<N> <PUZZLE>   Animation speed for --watch, frames per
-                              second (default 30).
-  sudoku --ui [--port=<N>]    Browser window: import puzzles by typing, from a
-                              file, or by pasting a screen-clip of a puzzle
-                              (Samurai or 9x9; read in the browser). Configure
-                              the solver (algorithm included) and watch it
-                              solve. Opens your default browser at
-                              http://127.0.0.1:8173 (--no-open to skip
-                              auto-open). Ctrl-C stops the server.
-  sudoku --transcribe IMG...  Read puzzle image(s) - a classic 9x9 grid
-        [--pretty]           or a samurai cross - and print the puzzle text
-                             for each (81 / 441 characters, shape
-                             auto-detected; PNG; the browser UI accepts
-                             any format). --pretty also prints a readable
-                             grid view. Sudoku consistency problems
-                             become stderr warnings.
-  sudoku -f <PATH>          Solve every puzzle in a file, one per line.
-  sudoku --file=<PATH>      Blank lines and lines starting with '#' are skipped.
-  sudoku -h | --help        Show this help.
+  sudoku-solver <PUZZLE>             Solve one puzzle: 81 characters, digits 1-9 with
+                                     0 or . for empty cells, e.g.
+                                     530070000600195000098000060800060003400803001700020006060000280000419005000080079
+                                     Drawn grids (spaces and | - + separators) are accepted too.
+                                     Samurai: 21 lines of 21 characters (- or space = hole),
+                                     a 441-char single line, or --samurai to force the shape.
+  sudoku-solver --dlx <PUZZLE>       Solve with Knuth's dancing links (Algorithm X)
+  sudoku-solver --naive <PUZZLE>     Solve with plain cell-by-cell backtracking
+  sudoku-solver --bench <PUZZLE>     Race all engines (mrv, dlx, naive) on one
+                                     puzzle; prints per-solve timings and a
+                                     correctness cross-check.
+  sudoku-solver --max=<N> <PUZZLE>   Stop after N solutions (default 2 proves
+                                     uniqueness; --max=1 just finds one solution).
+  sudoku-solver --samurai <PUZZLE>   Force the Samurai shape (auto-detected from
+                                     21x21 / 441-char input otherwise).
+  sudoku-solver -a --algorithm=mrv|dlx|naive
+                                     Pick the engine (default mrv).
+  sudoku-solver -w --watch <PUZZLE>  Live view: shows the imported puzzle, then
+                                     animates the grid as the solver fills it in.
+  sudoku-solver --fps=<N> <PUZZLE>   Animation speed for --watch, frames per
+                                     second (default 30).
+  sudoku-solver --ui [--port=<N>]    Browser window: import puzzles by typing, from a
+                                     file, or by pasting a screen-clip of a puzzle
+                                     (Samurai or 9x9; read in the browser). Configure
+                                     the solver (algorithm included) and watch it
+                                     solve. Opens your default browser at
+                                     http://127.0.0.1:8173 (--no-open to skip
+                                     auto-open). Ctrl-C stops the server.
+  sudoku-solver --transcribe IMG... [--pretty]
+                                     Read puzzle image(s) - a classic 9x9 grid
+                                     or a samurai cross - and print the puzzle text
+                                     for each (81 / 441 characters, shape
+                                     auto-detected; PNG; the browser UI accepts
+                                     any format). --pretty also prints a readable
+                                     grid view. Sudoku consistency problems
+                                     become stderr warnings.
+  sudoku-solver -f <PATH>            Solve every puzzle in a file, one per line.
+  sudoku-solver --file=<PATH>        Blank lines and lines starting with '#' are skipped.
+  sudoku-solver -h | --help          Show this help.
 
 ALGORITHMS:
   mrv    constraint propagation (naked + hidden singles)
